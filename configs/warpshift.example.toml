@@ -1,0 +1,36 @@
+# Example WarpShift-TUI configuration.
+# Copy to configs/warpshift.local.toml for local experiments; do not commit credentials.
+
+[app]
+startup_mode = "tui"
+
+[warp]
+# Local status only; WARP account registration and automation are intentionally unsupported.
+status_source = "local"
+
+[endpoint]
+# Static known WARP endpoint sources used by local scans; no live discovery is performed by default.
+static = ["162.159.192.10:2408", "162.159.193.20:2408"]
+
+[identity]
+# Path for a manually imported local identity JSON file. Do not commit this file.
+store_path = "configs/warpshift.identity.json"
+
+[wireguard]
+# Export path for a generated WireGuard profile derived from a manually imported identity.
+output_path = "configs/warpshift.wg.conf"
+endpoint = "engage.cloudflareclient.com:2408"
+dns = ["1.1.1.1", "1.0.0.1"]
+allowed_ips = ["0.0.0.0/0", "::/0"]
+persistent_keepalive = 25
+mtu = 1280
+
+[proxy]
+enabled = false
+listen_address = "127.0.0.1:0"
+
+[safety]
+account_automation = false
+warp_plus_generation = false
+dpi_evasion = false
+streaming_unlock = false
