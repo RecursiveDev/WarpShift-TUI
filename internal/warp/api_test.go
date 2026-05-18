@@ -131,7 +131,7 @@ func TestLicenseBindingAndStatusUseAPIClientWithoutLeakingSecrets(t *testing.T) 
 			t.Fatalf("unexpected request method=%s", r.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"device-secret-id","account":{"id":"account-secret-id","account_type":"premium","license":"redacted-server-license"}}`))
+		_, _ = w.Write([]byte(`{"id":"device-secret-id","name":"test-phone","type":"Android","active":true,"account":{"id":"account-secret-id","account_type":"premium","license":"redacted-server-license","devices":[{"id":"device-secret-id","name":"test-phone","type":"Android","active":true},{"id":"device-secondary-id","name":"laptop","type":"Windows","active":false}]}}`))
 	}))
 	defer server.Close()
 	client, err := NewAPIClient(APIClientConfig{BaseURL: server.URL, HTTPClient: server.Client()})
@@ -162,6 +162,12 @@ func TestLicenseBindingAndStatusUseAPIClientWithoutLeakingSecrets(t *testing.T) 
 	}
 	if !seenGet || status.DeviceID != "device-secret-id" || status.AccountID != "account-secret-id" {
 		t.Fatalf("device status mismatch: seenGet=%t deviceIDOK=%t accountIDOK=%t", seenGet, status.DeviceID == "device-secret-id", status.AccountID == "account-secret-id")
+	}
+	if status.DeviceName != "test-phone" || status.DeviceType != "Android" || !status.Active {
+		t.Fatalf("enriched device status mismatch: %+v", status)
+	}
+	if len(status.BoundDevices) != 2 || !status.BoundDevices[0].Current || status.BoundDevices[1].Active {
+		t.Fatalf("bound devices mismatch: %+v", status.BoundDevices)
 	}
 }
 
@@ -196,5 +202,17 @@ func TestAPIClientErrorsRedactSensitiveResponseBodyAndURL(t *testing.T) {
 	}
 	if !strings.Contains(message, "status 500") {
 		t.Fatalf("API error = %q, want sanitized status code", message)
+	}
+}
+
+func TestUnsupportedAccountDeviceOperationsAreConsentGatedAndDoNotUseClient(t *testing.T) {
+	if err := RenameDevice(context.Background(), DeviceOperationRequest{Name: "phone"}); !errors.Is(err, ErrAccountAutomationConsentRequired) {
+		t.Fatalf("RenameDevice without consent error = %v, want consent error", err)
+	}
+	if err := RenameDevice(context.Background(), DeviceOperationRequest{Name: "phone", ExplicitConsent: true, AcknowledgedGate: true}); !errors.Is(err, ErrUnsupportedAccountOperation) {
+		t.Fatalf("RenameDevice error = %v, want unsupported operation", err)
+	}
+	if err := DeactivateDevice(context.Background(), DeviceOperationRequest{ExplicitConsent: true, AcknowledgedGate: true}); !errors.Is(err, ErrUnsupportedAccountOperation) {
+		t.Fatalf("DeactivateDevice error = %v, want unsupported operation", err)
 	}
 }

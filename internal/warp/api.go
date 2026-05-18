@@ -22,6 +22,9 @@ const DefaultWARPAPIBaseURL = "https://api.cloudflareclient.com/v0a2158"
 // ErrAccountAutomationConsentRequired is returned before account/device API workflows run without explicit private-use consent.
 var ErrAccountAutomationConsentRequired = errors.New("explicit private-use consent is required for WARP account automation")
 
+// ErrUnsupportedAccountOperation is returned for account operations whose Cloudflare API semantics are not safely bounded yet.
+var ErrUnsupportedAccountOperation = errors.New("WARP account operation is not implemented in this version")
+
 // APIClientConfig configures a WARP API client. Tests should inject BaseURL and HTTPClient.
 type APIClientConfig struct {
 	BaseURL    string
@@ -95,11 +98,32 @@ func RegisterAccount(ctx context.Context, request AccountRegistrationRequest) (*
 
 // DeviceStatus is sanitized account/device status metadata returned by the WARP API client.
 type DeviceStatus struct {
-	DeviceID    string
-	AccountID   string
-	AccountType string
-	WARPPlus    bool
-	Active      bool
+	DeviceID     string
+	DeviceName   string
+	DeviceType   string
+	AccountID    string
+	AccountType  string
+	WARPPlus     bool
+	Active       bool
+	BoundDevices []BoundDevice
+}
+
+// BoundDevice is sanitized metadata for a device listed in an account status response.
+type BoundDevice struct {
+	DeviceID   string
+	Name       string
+	DeviceType string
+	Active     bool
+	Current    bool
+}
+
+// DeviceOperationRequest describes consent-gated device management operations.
+type DeviceOperationRequest struct {
+	Client           *APIClient
+	Identity         Identity
+	Name             string
+	ExplicitConsent  bool
+	AcknowledgedGate bool
 }
 
 // OfficialLicenseAPIRequest describes consent-gated official WARP+ license binding via the API client.
@@ -171,6 +195,31 @@ func (c *APIClient) BindLicense(ctx context.Context, identity Identity, licenseK
 		return nil, err
 	}
 	return response.toStatus(), nil
+}
+
+// RenameDevice is intentionally unsupported until Cloudflare WARP device naming API semantics are safely bounded.
+func RenameDevice(ctx context.Context, request DeviceOperationRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !request.ExplicitConsent || !request.AcknowledgedGate {
+		return ErrAccountAutomationConsentRequired
+	}
+	if strings.TrimSpace(request.Name) == "" {
+		return errors.New("device name is required")
+	}
+	return ErrUnsupportedAccountOperation
+}
+
+// DeactivateDevice is intentionally unsupported until Cloudflare WARP soft-deactivation API semantics are safely bounded.
+func DeactivateDevice(ctx context.Context, request DeviceOperationRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !request.ExplicitConsent || !request.AcknowledgedGate {
+		return ErrAccountAutomationConsentRequired
+	}
+	return ErrUnsupportedAccountOperation
 }
 
 // DeleteDevice deregisters a stored identity from the WARP API.
@@ -270,11 +319,16 @@ func randomInstallID() string {
 
 type apiDeviceResponse struct {
 	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Active  *bool  `json:"active"`
+	Enabled *bool  `json:"enabled"`
 	Token   string `json:"token"`
 	Account struct {
-		ID          string `json:"id"`
-		AccountType string `json:"account_type"`
-		License     string `json:"license"`
+		ID          string                     `json:"id"`
+		AccountType string                     `json:"account_type"`
+		License     string                     `json:"license"`
+		Devices     []apiAccountDeviceResponse `json:"devices"`
 	} `json:"account"`
 	Config struct {
 		ClientID  string `json:"client_id"`
@@ -291,6 +345,14 @@ type apiDeviceResponse struct {
 			} `json:"endpoint"`
 		} `json:"peers"`
 	} `json:"config"`
+}
+
+type apiAccountDeviceResponse struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Active  *bool  `json:"active"`
+	Enabled *bool  `json:"enabled"`
 }
 
 func (r apiDeviceResponse) toIdentity(privateKey string) (*Identity, error) {
@@ -324,11 +386,32 @@ func (r apiDeviceResponse) toIdentity(privateKey string) (*Identity, error) {
 
 func (r apiDeviceResponse) toStatus() *DeviceStatus {
 	accountType := strings.TrimSpace(r.Account.AccountType)
-	return &DeviceStatus{
-		DeviceID:    strings.TrimSpace(r.ID),
+	deviceID := strings.TrimSpace(r.ID)
+	status := &DeviceStatus{
+		DeviceID:    deviceID,
+		DeviceName:  strings.TrimSpace(r.Name),
+		DeviceType:  strings.TrimSpace(r.Type),
 		AccountID:   strings.TrimSpace(r.Account.ID),
 		AccountType: accountType,
 		WARPPlus:    strings.EqualFold(accountType, "premium") || strings.TrimSpace(r.Account.License) != "",
-		Active:      strings.TrimSpace(r.ID) != "",
+		Active:      apiBoolWithDefault(r.Active, apiBoolWithDefault(r.Enabled, deviceID != "")),
 	}
+	for _, device := range r.Account.Devices {
+		boundID := strings.TrimSpace(device.ID)
+		status.BoundDevices = append(status.BoundDevices, BoundDevice{
+			DeviceID:   boundID,
+			Name:       strings.TrimSpace(device.Name),
+			DeviceType: strings.TrimSpace(device.Type),
+			Active:     apiBoolWithDefault(device.Active, apiBoolWithDefault(device.Enabled, boundID != "")),
+			Current:    boundID != "" && boundID == deviceID,
+		})
+	}
+	return status
+}
+
+func apiBoolWithDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
