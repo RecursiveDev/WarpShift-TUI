@@ -204,11 +204,13 @@ WarpShift-TUI/
 
 WarpShift-TUI is designed for **local, private-use operation**. Key safety features:
 
-- **Consent Gates** — Advanced workflows (account registration, streaming rotation, WARP+ license binding) require explicit paired consent flags in configuration.
+- **Paired Consent Gates** — Advanced workflows (account registration, streaming rotation, WARP+ license binding) require both a feature flag and a matching consent flag in the `[safety]` configuration section. Both must be `true` for the workflow to activate. See [`docs/architecture/ADR-001-safety-consent-architecture.md`](docs/architecture/ADR-001-safety-consent-architecture.md) for details.
 - **Local-First** — No telemetry, no remote analytics. All state is stored locally.
 - **Secret-Safe Defaults** — Identity files, WireGuard configs, and local config overrides are git-ignored by default.
 - **Rate Limiting & Allowlists** — Proxy listeners default to localhost-only with per-client connection budgets.
 - **Non-Root Docker** — Container runs as a dedicated `warpshift` user with resource limits.
+- **DPI Evasion (Not Implemented)** — The `dpi_evasion` config flags exist but no runtime DPI evasion logic is active. See [`docs/architecture/ADR-002-dpi-evasion-deferred.md`](docs/architecture/ADR-002-dpi-evasion-deferred.md).
+- **TLS Proxy Mode (Not Implemented)** — The `tls_mode` config field exists but only `"disabled"` has an effect. See [`docs/architecture/ADR-003-tls-proxy-mode-deferred.md`](docs/architecture/ADR-003-tls-proxy-mode-deferred.md).
 
 > **Important:** This tool is intended for managing WARP connections on accounts and networks you own or are authorized to use. Users are responsible for compliance with Cloudflare's terms of service.
 
@@ -227,6 +229,25 @@ See [SUPPORT.md](SUPPORT.md) for getting help and filing bug reports.
 ## Security
 
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
+
+## Architecture Decisions
+
+Architecture decision records are located in [`docs/architecture/`](docs/architecture/):
+
+- [ADR-001: Safety and Consent Gate Architecture](docs/architecture/ADR-001-safety-consent-architecture.md) — How paired consent flags protect sensitive workflows.
+- [ADR-002: DPI Evasion — Deferred Scope](docs/architecture/ADR-002-dpi-evasion-deferred.md) — Why DPI evasion config exists but runtime is not implemented.
+- [ADR-003: TLS Proxy Mode — Deferred Scope](docs/architecture/ADR-003-tls-proxy-mode-deferred.md) — Why `tls_mode` is parsed but only `"disabled"` has effect.
+- [ADR-004: Bubble Tea v2 Migration — Deferred](docs/architecture/ADR-004-bubbletea-v2-migration-deferred.md) — Why the TUI remains on Bubble Tea v1.
+
+## Disclaimer
+
+WarpShift-TUI is an **independent, open-source project** and is **not affiliated with, endorsed by, or sponsored by Cloudflare, Inc.**
+
+- "Cloudflare WARP", "1.1.1.1", "WARP+", and the Cloudflare logo are trademarks of Cloudflare, Inc.
+- This project interacts with Cloudflare's public WARP client API using user-provided credentials. It does not modify, redistribute, or wrap any Cloudflare software.
+- "Cloudflare" is used in this documentation solely to identify the service that this tool is designed to manage.
+- No Cloudflare intellectual property is included in this repository. All code is original and licensed under the [MIT License](LICENSE).
+- Users are solely responsible for compliance with [Cloudflare's Terms of Service](https://www.cloudflare.com/terms/) and applicable laws when using this tool.
 
 ## Changelog
 
