@@ -140,6 +140,8 @@ func validateConfig(config Config) (Config, error) {
 	if config.ListenAddr == "" {
 		config.ListenAddr = DefaultListenAddr
 	}
+	config.Username = strings.TrimSpace(config.Username)
+	config.Password = strings.TrimSpace(config.Password)
 	config.AllowedClientCIDRs = cleanCIDRs(config.AllowedClientCIDRs)
 	if len(config.AllowedClientCIDRs) == 0 {
 		config.AllowedClientCIDRs = append([]string(nil), defaultAllowedClientCIDRs...)
@@ -168,8 +170,13 @@ func validateConfig(config Config) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("proxy listen address must be host:port: %w", err)
 	}
-	if !isLocalBindHost(host) && !config.AuthEnabled() {
-		return Config{}, errors.New("authentication is required for non-localhost proxy bind addresses")
+	if !isLocalBindHost(host) {
+		if !config.AuthEnabled() {
+			return Config{}, errors.New("authentication is required for non-localhost proxy bind addresses")
+		}
+		if err := validateRemoteProxyCredentials(config.Username, config.Password); err != nil {
+			return Config{}, err
+		}
 	}
 
 	return config, nil
@@ -182,6 +189,23 @@ func isLocalBindHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func validateRemoteProxyCredentials(username, password string) error {
+	if len(username) < 3 {
+		return errors.New("proxy authentication username is too weak for non-localhost bind addresses")
+	}
+	if len(password) < 12 {
+		return errors.New("proxy authentication password is too weak for non-localhost bind addresses")
+	}
+	if constantTimeEqual(strings.ToLower(username), strings.ToLower(password)) {
+		return errors.New("proxy authentication username and password must differ for non-localhost bind addresses")
+	}
+	switch strings.ToLower(password) {
+	case "password", "password123", "changeme", "letmein", "warpshift", "adminadmin":
+		return errors.New("proxy authentication password is too weak for non-localhost bind addresses")
+	}
+	return nil
 }
 
 func cleanCIDRs(values []string) []string {

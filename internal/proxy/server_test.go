@@ -58,9 +58,19 @@ func TestNewServerRejectsRemoteBindWithoutAuth(t *testing.T) {
 }
 
 func TestNewServerAcceptsRemoteBindWithAuth(t *testing.T) {
-	_, err := NewServer(Config{ListenAddr: "0.0.0.0:1080", Username: "user", Password: "pass"}, &recordingDialer{})
+	_, err := NewServer(Config{ListenAddr: "0.0.0.0:1080", Username: "operator", Password: "strong-passphrase-123"}, &recordingDialer{})
 	if err != nil {
 		t.Fatalf("NewServer rejected authenticated remote bind: %v", err)
+	}
+}
+
+func TestNewServerRejectsWeakRemoteCredentials(t *testing.T) {
+	_, err := NewServer(Config{ListenAddr: "0.0.0.0:1080", Username: "user", Password: "pass"}, &recordingDialer{})
+	if err == nil {
+		t.Fatal("expected weak remote proxy credentials to be rejected")
+	}
+	if !strings.Contains(err.Error(), "too weak") {
+		t.Fatalf("error = %q, want weak credential guidance", err.Error())
 	}
 }
 
