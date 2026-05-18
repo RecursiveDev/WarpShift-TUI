@@ -51,13 +51,13 @@ func TestModelRendersDashboardStatusEndpointsFooterAndHelp(t *testing.T) {
 	help := helpModel.View()
 	for _, want := range []string{
 		"Help",
-		"manual identity import only",
+		"manual identity import remains available as a consent-free local path",
 		"localhost proxy defaults",
 		"authentication required for remote proxy binds",
-		"no account registration",
-		"no WARP+ generation",
-		"no DPI evasion",
-		"no streaming unlock",
+		"account automation requires explicit user consent",
+		"WARP+ workflows require explicit user consent",
+		"DPI-related workflows require explicit user consent",
+		"streaming/IP rotation workflows require explicit user consent",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help view missing %q in:\n%s", want, help)
@@ -140,7 +140,7 @@ func TestModelInteractiveIdentitySetupMasksPrivateKeyAndShowsValidationPreview(t
 		"••••",
 		"Validation preview",
 		"ready to import",
-		"no account/API calls",
+		"account/API workflows require explicit command consent",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("identity setup view missing %q in:\n%s", want, view)

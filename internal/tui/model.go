@@ -93,7 +93,7 @@ func NewModel(snapshot Snapshot) Model {
 		snapshot.Status.Proxy = "disabled"
 	}
 	if strings.TrimSpace(snapshot.Status.Message) == "" {
-		snapshot.Status.Message = "local dashboard only; no live network access from TUI"
+		snapshot.Status.Message = "local dashboard; live network workflows require explicit user action"
 	}
 	return Model{snapshot: snapshot}
 }
@@ -222,7 +222,7 @@ func (m Model) renderDashboard() string {
 	endpoints := panelStyle.Render("Endpoints\n" + m.endpointRows())
 	contextHelp := panelStyle.Render(strings.Join([]string{
 		"Context Help",
-		"Use local fixtures and injected scans only; live tunnel operations are not started here.",
+		"Use local fixtures and injected scans; live tunnel workflows require explicit command action.",
 		"/: command palette • i: identity setup • ?: safety help • q: quit",
 	}, "\n"))
 	footer := footerStyle.Render("/: command palette • i: identity setup • ?: help • h: help • q: quit")
@@ -276,7 +276,7 @@ func (m Model) renderNotifications() string {
 func (m Model) renderIdentitySetup() string {
 	rows := []string{
 		"Interactive Identity Setup",
-		"Manual user-provided identity preview only; no account/API calls are made.",
+		"Manual user-provided identity preview; account/API workflows require explicit command consent.",
 		"Private key input is hidden and is never echoed.",
 		"",
 	}
@@ -321,7 +321,7 @@ func (m Model) identityValidationPreview() string {
 	if err != nil {
 		return "Validation preview: " + err.Error()
 	}
-	return "Validation preview: ready to import manually; no account/API calls will be made."
+	return "Validation preview: ready to import manually; account/API workflows require explicit command consent."
 }
 
 func (m Model) identityFieldValue() string {
@@ -431,13 +431,13 @@ func (m Model) renderHelp() string {
 		"  q      quit",
 		"",
 		"Safety boundaries:",
-		"  - manual identity import only",
+		"  - manual identity import remains available as a consent-free local path",
 		"  - localhost proxy defaults",
 		"  - authentication required for remote proxy binds",
-		"  - no account registration",
-		"  - no WARP+ generation",
-		"  - no DPI evasion",
-		"  - no streaming unlock",
+		"  - account automation requires explicit user consent",
+		"  - WARP+ workflows require explicit user consent",
+		"  - DPI-related workflows require explicit user consent",
+		"  - streaming/IP rotation workflows require explicit user consent",
 	}, "\n")
 	return panelStyle.Render(body) + "\n"
 }
