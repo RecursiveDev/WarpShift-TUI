@@ -111,6 +111,9 @@ func TestRunHelpDocumentsCommandsAndSafeScope(t *testing.T) {
 		"proxy start",
 		"account register",
 		"account status",
+		"account devices",
+		"account rename",
+		"account deactivate",
 		"account delete",
 		"license bind",
 		"license status",
@@ -411,8 +414,26 @@ func TestAccountRegisterStatusDeleteAndLicenseCLIUseFakeAPIWithConsent(t *testin
 	if strings.Contains(statusOutput, "device-secret-id") {
 		t.Fatal("status output leaked identity material")
 	}
-	if !strings.Contains(stdout.String(), "account_type=limited") {
-		t.Fatalf("status output missing safe status: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	for _, want := range []string{"account_type=limited", "device_name=test-phone", "device_type=Android", "bound_devices=2"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status output missing %q: stdout=%q stderr=%q", want, stdout.String(), stderr.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"account", "devices", "--config", configPath, "--identity", storePath, "--api-base-url", server.URL})
+	if exitCode != 0 {
+		t.Fatalf("account devices exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	devicesOutput := stdout.String() + stderr.String()
+	if strings.Contains(devicesOutput, "device-secret-id") || strings.Contains(devicesOutput, "device-secondary-id") {
+		t.Fatal("devices output leaked device identifiers")
+	}
+	for _, want := range []string{"bound devices: count=2", "name=test-phone", "current=true", "name=laptop", "current=false"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("devices output missing %q in %q", want, stdout.String())
+		}
 	}
 
 	stdout.Reset()
@@ -491,6 +512,38 @@ func TestAccountAndLicenseCLIRequireConsentBeforeNetwork(t *testing.T) {
 	}
 	if called {
 		t.Fatal("CLI contacted API before consent")
+	}
+}
+
+func TestAccountRenameAndDeactivateExposeUnsupportedWithoutNetwork(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writePrivateUseConfig(t, dir, true, false)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"account", "rename", "--config", configPath, "--name", "new-name"})
+	if exitCode != 2 {
+		t.Fatalf("account rename exit code = %d, want 2", exitCode)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "not implemented") {
+		t.Fatalf("rename output = stdout=%q stderr=%q, want unsupported guidance", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"account", "deactivate", "--config", configPath})
+	if exitCode != 2 {
+		t.Fatalf("account deactivate exit code = %d, want 2", exitCode)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "not implemented") || !strings.Contains(stderr.String(), "account delete") {
+		t.Fatalf("deactivate output = stdout=%q stderr=%q, want unsupported delete guidance", stdout.String(), stderr.String())
+	}
+	if called {
+		t.Fatal("unsupported account management commands contacted API")
 	}
 }
 
@@ -600,6 +653,53 @@ func TestProxyValidateDocumentsHardeningFlags(t *testing.T) {
 	for _, want := range []string{"proxy configuration valid", "allowlist=127.0.0.0/8,::1/128", "rate_limit=30/min burst=5"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("proxy validate output missing %q in %q", want, stdout.String())
+		}
+	}
+}
+
+func TestProxyValidateHonorsConfiguredEnabledFlag(t *testing.T) {
+	dir := t.TempDir()
+	disabledPath := filepath.Join(dir, "proxy-disabled.toml")
+	if err := os.WriteFile(disabledPath, []byte(`
+[proxy]
+enabled = false
+listen_address = "127.0.0.1:0"
+tls_mode = "disabled"
+`), 0o600); err != nil {
+		t.Fatalf("write disabled proxy config: %v", err)
+	}
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"proxy", "validate", "--config", disabledPath})
+	if exitCode != 0 {
+		t.Fatalf("disabled proxy validate exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "proxy disabled by config") {
+		t.Fatalf("stdout = %q, want disabled proxy message", stdout.String())
+	}
+
+	enabledPath := filepath.Join(dir, "proxy-enabled.toml")
+	if err := os.WriteFile(enabledPath, []byte(`
+[proxy]
+enabled = true
+listen_address = "127.0.0.1:0"
+allowed_client_cidrs = ["127.0.0.0/8"]
+rate_limit_per_minute = 42
+rate_limit_burst = 7
+tls_mode = "disabled"
+`), 0o600); err != nil {
+		t.Fatalf("write enabled proxy config: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"proxy", "validate", "--config", enabledPath})
+	if exitCode != 0 {
+		t.Fatalf("enabled proxy validate exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	for _, want := range []string{"proxy configuration valid", "allowlist=127.0.0.0/8", "rate_limit=42/min burst=7"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("enabled proxy output missing %q in %q", want, stdout.String())
 		}
 	}
 }
@@ -1082,7 +1182,7 @@ func writeCLIAPIStatus(t *testing.T, w http.ResponseWriter, accountType string) 
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	clientID := base64.StdEncoding.EncodeToString([]byte{1, 2, 3})
-	if _, err := fmt.Fprintf(w, `{"id":"device-secret-id","token":"token-secret-value","account":{"id":"account-secret-id","account_type":%q},"config":{"client_id":%q,"interface":{"addresses":{"v4":"172.16.0.2","v6":"2606:4700:110:abcd::2"}},"peers":[{"public_key":"peer-public-key","endpoint":{"host":"engage.cloudflareclient.com:2408"}}]}}`, accountType, clientID); err != nil {
+	if _, err := fmt.Fprintf(w, `{"id":"device-secret-id","name":"test-phone","type":"Android","active":true,"token":"token-secret-value","account":{"id":"account-secret-id","account_type":%q,"devices":[{"id":"device-secret-id","name":"test-phone","type":"Android","active":true},{"id":"device-secondary-id","name":"laptop","type":"Windows","active":false}]},"config":{"client_id":%q,"interface":{"addresses":{"v4":"172.16.0.2","v6":"2606:4700:110:abcd::2"}},"peers":[{"public_key":"peer-public-key","endpoint":{"host":"engage.cloudflareclient.com:2408"}}]}}`, accountType, clientID); err != nil {
 		t.Fatalf("write API status: %v", err)
 	}
 }

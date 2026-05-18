@@ -412,7 +412,7 @@ func (c *Command) runProfile(args []string) int {
 
 func (c *Command) runAccount(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(c.stderr, "warpshift account: expected subcommand register, status, or delete")
+		fmt.Fprintln(c.stderr, "warpshift account: expected subcommand register, status, devices, rename, deactivate, or delete")
 		return 2
 	}
 	defaults := config.DefaultSettings()
@@ -447,7 +447,7 @@ func (c *Command) runAccount(ctx context.Context, args []string) int {
 		}
 		fmt.Fprintf(c.stdout, "WARP account registered; identity stored at %s\n", storePath)
 		return 0
-	case "status", "delete":
+	case "status", "devices", "delete":
 		flags := c.newFlagSet("account " + args[0])
 		configPath := flags.String("config", "configs/warpshift.example.toml", "config file with account_automation consent")
 		identityPath := flags.String("identity", defaults.Identity.StorePath, "stored WARP identity path")
@@ -466,13 +466,29 @@ func (c *Command) runAccount(ctx context.Context, args []string) int {
 		if !ok {
 			return 2
 		}
-		if args[0] == "status" {
+		switch args[0] {
+		case "status":
 			status, err := client.DeviceStatus(ctx, *identity)
 			if err != nil {
 				fmt.Fprintf(c.stderr, "warpshift account status: %v\n", err)
 				return 2
 			}
-			fmt.Fprintf(c.stdout, "WARP device status: account_type=%s warp_plus=%t active=%t\n", safeAccountType(status.AccountType), status.WARPPlus, status.Active)
+			fmt.Fprintf(c.stdout, "WARP device status: device_name=%s device_type=%s account_type=%s warp_plus=%t active=%t bound_devices=%d\n", safeDisplayValue(status.DeviceName), safeDisplayValue(status.DeviceType), safeAccountType(status.AccountType), status.WARPPlus, status.Active, len(status.BoundDevices))
+			return 0
+		case "devices":
+			status, err := client.DeviceStatus(ctx, *identity)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "warpshift account devices: %v\n", err)
+				return 2
+			}
+			if len(status.BoundDevices) == 0 {
+				fmt.Fprintln(c.stdout, "no bound devices reported by account status response")
+				return 0
+			}
+			fmt.Fprintf(c.stdout, "bound devices: count=%d\n", len(status.BoundDevices))
+			for i, device := range status.BoundDevices {
+				fmt.Fprintf(c.stdout, "device %d: name=%s type=%s active=%t current=%t\n", i+1, safeDisplayValue(device.Name), safeDisplayValue(device.DeviceType), device.Active, device.Current)
+			}
 			return 0
 		}
 		if err := client.DeleteDevice(ctx, *identity); err != nil {
@@ -486,6 +502,30 @@ func (c *Command) runAccount(ctx context.Context, args []string) int {
 				return 2
 			}
 			fmt.Fprintln(c.stdout, "local identity removed")
+		}
+		return 0
+	case "rename", "deactivate":
+		flags := c.newFlagSet("account " + args[0])
+		configPath := flags.String("config", "configs/warpshift.example.toml", "config file with account_automation consent")
+		name := flags.String("name", "", "new device name for account rename")
+		if err := flags.Parse(args[1:]); err != nil {
+			return c.usageError("account "+args[0], err)
+		}
+		if flags.NArg() != 0 {
+			return c.unexpectedArg("account "+args[0], flags.Arg(0))
+		}
+		if _, ok := c.loadAccountConsent("account "+args[0], *configPath); !ok {
+			return 2
+		}
+		var err error
+		if args[0] == "rename" {
+			err = warp.RenameDevice(ctx, warp.DeviceOperationRequest{Name: *name, ExplicitConsent: true, AcknowledgedGate: true})
+		} else {
+			err = warp.DeactivateDevice(ctx, warp.DeviceOperationRequest{ExplicitConsent: true, AcknowledgedGate: true})
+		}
+		if err != nil {
+			fmt.Fprintf(c.stderr, "warpshift account %s: %v; use account delete only for explicit API deregistration\n", args[0], err)
+			return 2
 		}
 		return 0
 	default:
@@ -861,7 +901,9 @@ func (c *Command) runProxy(ctx context.Context, args []string) int {
 	switch args[0] {
 	case "validate", "start":
 		defaults := config.DefaultSettings()
+		settings := defaults
 		flags := c.newFlagSet("proxy " + args[0])
+		configPath := flags.String("config", "", "optional TOML config path; proxy.enabled=false disables the configured proxy")
 		listen := flags.String("listen", proxy.DefaultListenAddr, "proxy listen address; used for SOCKS5 unless --socks-listen/--http-listen selects listeners")
 		socksListen := flags.String("socks-listen", "", "SOCKS5 proxy listen address")
 		httpListen := flags.String("http-listen", "", "HTTP proxy listen address")
@@ -877,6 +919,34 @@ func (c *Command) runProxy(ctx context.Context, args []string) int {
 		}
 		if flags.NArg() != 0 {
 			return c.unexpectedArg("proxy "+args[0], flags.Arg(0))
+		}
+		setFlags := map[string]bool{}
+		flags.Visit(func(flag *flag.Flag) { setFlags[flag.Name] = true })
+
+		configLoaded := strings.TrimSpace(*configPath) != ""
+		if configLoaded {
+			loaded, err := config.Load(*configPath)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "warpshift proxy %s: %v\n", args[0], err)
+				return 2
+			}
+			settings = loaded
+			if !settings.Proxy.Enabled {
+				fmt.Fprintf(c.stdout, "proxy disabled by config: %s\n", *configPath)
+				return 0
+			}
+			if !setFlags["listen"] {
+				*listen = settings.Proxy.ListenAddress
+			}
+			if !setFlags["allow-cidr"] {
+				*allowCIDRs = strings.Join(settings.Proxy.AllowedClientCIDRs, ",")
+			}
+			if !setFlags["rate-limit-per-minute"] {
+				*rateLimitPerMinute = settings.Proxy.RateLimitPerMinute
+			}
+			if !setFlags["rate-limit-burst"] {
+				*rateLimitBurst = settings.Proxy.RateLimitBurst
+			}
 		}
 
 		listeners := selectedProxyListeners(flags, *listen, *socksListen, *httpListen)
@@ -903,7 +973,7 @@ func (c *Command) runProxy(ctx context.Context, args []string) int {
 		var outbound proxy.Dialer
 		tunnelReady := false
 		if strings.TrimSpace(*identityPath) != "" {
-			identity, endpoint, tunnelConfig, err := c.loadProxyTunnelConfig(*identityPath, *endpointValue, defaults)
+			identity, endpoint, tunnelConfig, err := c.loadProxyTunnelConfig(*identityPath, *endpointValue, settings)
 			if err != nil {
 				fmt.Fprintf(c.stderr, "warpshift proxy %s: %v\n", args[0], err)
 				return 2
@@ -1253,6 +1323,14 @@ func (c *Command) loadAPIIdentityAndClient(command, identityPath, baseURL string
 	return identity, client, true
 }
 
+func safeDisplayValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
 func safeAccountType(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1415,7 +1493,10 @@ Commands:
   proxy validate          Validate proxy bind/auth configuration
   proxy start             Serve local SOCKS5 and/or HTTP proxy listeners
   account register        Register and securely store a private-use WARP identity
-  account status          Fetch account/device status without printing identifiers
+  account status          Fetch account/device status (device metadata may be displayed; no private keys or tokens are printed)
+  account devices         List bound devices reported by account status responses
+  account rename          Report unsupported device naming semantics without network calls
+  account deactivate      Report unsupported soft-deactivation semantics without network calls
   account delete          Deregister a device and optionally remove local identity
   license bind            Bind a user-owned WARP+ license with explicit consent
   license status          Fetch WARP+ status without printing license material
