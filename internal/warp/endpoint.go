@@ -47,9 +47,7 @@ func IsKnownCloudflareWARPEndpoint(endpoint Endpoint) bool {
 	if err != nil {
 		return false
 	}
-	prefixes := []string{"162.159.192.0/24", "162.159.193.0/24", "162.159.194.0/24", "162.159.195.0/24", "188.114.96.0/24", "188.114.97.0/24", "188.114.98.0/24", "188.114.99.0/24"}
-	for _, value := range prefixes {
-		prefix := netip.MustParsePrefix(value)
+	for _, prefix := range KnownCloudflareWARPPrefixes() {
 		if prefix.Contains(addr) {
 			return true
 		}
