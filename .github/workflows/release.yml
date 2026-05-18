@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Build all targets
+        run: make build-all VERSION="${{ github.ref_name }}"
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: Verify artifacts
+        working-directory: dist
+        run: |
+          echo "=== Release artifacts ==="
+          ls -lh
+          echo ""
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          body: |
+            ## WarpShift-TUI ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | Architecture | Binary |
+            |----------|-------------|--------|
+            | Linux | amd64 | `warpshift-linux-amd64` |
+            | Linux | arm64 | `warpshift-linux-arm64` |
+            | macOS | amd64 | `warpshift-darwin-amd64` |
+            | macOS | arm64 | `warpshift-darwin-arm64` |
+            | Windows | amd64 | `warpshift-windows-amd64.exe` |
+
+            Verify integrity with `SHA256SUMS` before use.
+          files: |
+            dist/warpshift-linux-amd64
+            dist/warpshift-linux-arm64
+            dist/warpshift-darwin-amd64
+            dist/warpshift-darwin-arm64
+            dist/warpshift-windows-amd64.exe
+            dist/SHA256SUMS
+          generate_release_notes: true
+          make_latest: true
