@@ -1,5 +1,5 @@
-// Package proxy is reserved for local proxy orchestration primitives.
+// Package proxy provides local proxy orchestration primitives.
 //
-// Implementations should manage only user-configured local proxy behavior and
-// must not provide bypass, evasion, or streaming-unlock functionality.
+// Implementations should manage user-configured proxy behavior with explicit
+// operator consent for exposed listeners or advanced traffic workflows.
 package proxy

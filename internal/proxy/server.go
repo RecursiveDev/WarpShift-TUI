@@ -13,11 +13,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	// DefaultListenAddr keeps proxy listeners bound to localhost unless configured otherwise.
 	DefaultListenAddr = "127.0.0.1:0"
+
+	// DefaultRateLimitPerMinute is a conservative per-client connection budget.
+	DefaultRateLimitPerMinute = 120
+	// DefaultRateLimitBurst allows short local bursts while still bounding abuse.
+	DefaultRateLimitBurst = 20
 
 	socksVersion           = byte(0x05)
 	socksMethodNoAuth      = byte(0x00)
@@ -32,11 +38,16 @@ const (
 	socksAtypIPv6          = byte(0x04)
 )
 
+var defaultAllowedClientCIDRs = []string{"127.0.0.0/8", "::1/128"}
+
 // Config controls local proxy server behavior.
 type Config struct {
-	ListenAddr string
-	Username   string
-	Password   string
+	ListenAddr         string
+	Username           string
+	Password           string
+	AllowedClientCIDRs []string
+	RateLimitPerMinute int
+	RateLimitBurst     int
 }
 
 // AuthEnabled reports whether proxy authentication is configured.
@@ -51,8 +62,10 @@ type Dialer interface {
 
 // Server owns validated proxy configuration and outbound dialing.
 type Server struct {
-	config Config
-	dialer Dialer
+	config   Config
+	dialer   Dialer
+	allowNet []*net.IPNet
+	limiter  *rateLimiter
 }
 
 type netDialer struct{}
@@ -71,7 +84,11 @@ func NewServer(config Config, dialer Dialer) (*Server, error) {
 	if dialer == nil {
 		dialer = netDialer{}
 	}
-	return &Server{config: validated, dialer: dialer}, nil
+	allowNet, err := parseAllowedClientCIDRs(validated.AllowedClientCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{config: validated, dialer: dialer, allowNet: allowNet, limiter: newRateLimiter(validated.RateLimitPerMinute, validated.RateLimitBurst, time.Now)}, nil
 }
 
 // Config returns the server's validated configuration.
@@ -123,6 +140,25 @@ func validateConfig(config Config) (Config, error) {
 	if config.ListenAddr == "" {
 		config.ListenAddr = DefaultListenAddr
 	}
+	config.AllowedClientCIDRs = cleanCIDRs(config.AllowedClientCIDRs)
+	if len(config.AllowedClientCIDRs) == 0 {
+		config.AllowedClientCIDRs = append([]string(nil), defaultAllowedClientCIDRs...)
+	}
+	if _, err := parseAllowedClientCIDRs(config.AllowedClientCIDRs); err != nil {
+		return Config{}, err
+	}
+	if config.RateLimitPerMinute < 0 {
+		return Config{}, errors.New("proxy rate limit per minute cannot be negative")
+	}
+	if config.RateLimitBurst < 0 {
+		return Config{}, errors.New("proxy rate limit burst cannot be negative")
+	}
+	if config.RateLimitPerMinute == 0 {
+		config.RateLimitPerMinute = DefaultRateLimitPerMinute
+	}
+	if config.RateLimitBurst == 0 {
+		config.RateLimitBurst = DefaultRateLimitBurst
+	}
 
 	if (config.Username == "") != (config.Password == "") {
 		return Config{}, errors.New("proxy authentication requires both username and password")
@@ -148,9 +184,46 @@ func isLocalBindHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func cleanCIDRs(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
+}
+
+func parseAllowedClientCIDRs(values []string) ([]*net.IPNet, error) {
+	networks := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			value = fmt.Sprintf("%s/%d", ip.String(), bits)
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil, fmt.Errorf("proxy allowed client CIDR %q is invalid", value)
+		}
+		networks = append(networks, network)
+	}
+	return networks, nil
+}
+
 // ServeSOCKS5Conn handles one SOCKS5 client connection.
 func (s *Server) ServeSOCKS5Conn(ctx context.Context, client net.Conn) error {
 	defer client.Close()
+	if err := s.checkClientAccess(client); err != nil {
+		return err
+	}
 
 	reader := bufio.NewReader(client)
 	if err := s.handleSOCKS5Greeting(reader, client); err != nil {
@@ -312,6 +385,10 @@ func containsMethod(methods []byte, method byte) bool {
 // ServeHTTPConn handles one HTTP proxy client connection, including CONNECT tunnels.
 func (s *Server) ServeHTTPConn(ctx context.Context, client net.Conn) error {
 	defer client.Close()
+	if err := s.checkClientAccess(client); err != nil {
+		_ = writeHTTPError(client, http.StatusTooManyRequests)
+		return err
+	}
 
 	reader := bufio.NewReader(client)
 	request, err := http.ReadRequest(reader)
@@ -419,6 +496,93 @@ func withDefaultPort(address, defaultPort string) (string, error) {
 		}
 	}
 	return net.JoinHostPort(address, defaultPort), nil
+}
+
+func (s *Server) checkClientAccess(conn net.Conn) error {
+	addr := conn.RemoteAddr()
+	clientIP := clientIPFromAddr(addr)
+	if clientIP == nil {
+		return nil
+	}
+	allowed := false
+	for _, network := range s.allowNet {
+		if network.Contains(clientIP) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return errors.New("proxy client not allowed")
+	}
+	if s.limiter != nil && !s.limiter.allow(clientIP.String()) {
+		return errors.New("proxy client rate limit exceeded")
+	}
+	return nil
+}
+
+func clientIPFromAddr(addr net.Addr) net.IP {
+	if addr == nil {
+		return nil
+	}
+	switch value := addr.(type) {
+	case *net.TCPAddr:
+		return value.IP
+	case *net.UDPAddr:
+		return value.IP
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return nil
+		}
+		return net.ParseIP(host)
+	}
+}
+
+type rateLimiter struct {
+	mu        sync.Mutex
+	perMinute int
+	burst     int
+	now       func() time.Time
+	buckets   map[string]*rateBucket
+}
+
+type rateBucket struct {
+	tokens  float64
+	updated time.Time
+}
+
+func newRateLimiter(perMinute, burst int, now func() time.Time) *rateLimiter {
+	if perMinute <= 0 || burst <= 0 {
+		return nil
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &rateLimiter{perMinute: perMinute, burst: burst, now: now, buckets: map[string]*rateBucket{}}
+}
+
+func (l *rateLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	bucket := l.buckets[key]
+	if bucket == nil {
+		bucket = &rateBucket{tokens: float64(l.burst), updated: now}
+		l.buckets[key] = bucket
+	}
+	elapsed := now.Sub(bucket.updated)
+	if elapsed > 0 {
+		bucket.tokens += elapsed.Minutes() * float64(l.perMinute)
+		if bucket.tokens > float64(l.burst) {
+			bucket.tokens = float64(l.burst)
+		}
+		bucket.updated = now
+	}
+	if bucket.tokens < 1 {
+		return false
+	}
+	bucket.tokens--
+	return true
 }
 
 func relay(ctx context.Context, client net.Conn, target net.Conn, clientReader io.Reader) error {

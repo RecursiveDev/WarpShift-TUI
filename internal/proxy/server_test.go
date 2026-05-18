@@ -313,3 +313,94 @@ func TestHTTPProxyForwardsAbsoluteURLWithoutProxyCredentials(t *testing.T) {
 		t.Fatal("HTTP handler did not return after forwarding response")
 	}
 }
+
+func TestServerRejectsClientsOutsideAllowlist(t *testing.T) {
+	client, proxySide := net.Pipe()
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+
+	dialer := &recordingDialer{}
+	server, err := NewServer(Config{AllowedClientCIDRs: []string{"127.0.0.0/8"}}, dialer)
+	if err != nil {
+		t.Fatalf("NewServer returned unexpected error: %v", err)
+	}
+
+	remote := &remoteAddrConn{Conn: proxySide, remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.10"), Port: 53000}}
+	done := make(chan error, 1)
+	go func() { done <- server.ServeSOCKS5Conn(context.Background(), remote) }()
+
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err == nil {
+		reply := make([]byte, 2)
+		if _, err := io.ReadFull(client, reply); err == nil {
+			t.Fatalf("unexpected SOCKS5 reply for blocked client: %v", reply)
+		}
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("handler error = %v, want allowlist rejection", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS5 handler did not return after allowlist rejection")
+	}
+	_, _, calls := dialer.snapshot()
+	if calls != 0 {
+		t.Fatalf("dialer calls = %d, want 0", calls)
+	}
+}
+
+func TestHTTPRateLimitReturnsTooManyRequests(t *testing.T) {
+	dialer := &recordingDialer{}
+	server, err := NewServer(Config{RateLimitPerMinute: 1, RateLimitBurst: 1}, dialer)
+	if err != nil {
+		t.Fatalf("NewServer returned unexpected error: %v", err)
+	}
+
+	firstClient, firstProxy := net.Pipe()
+	firstClient.SetDeadline(time.Now().Add(2 * time.Second))
+	firstProxy = &remoteAddrConn{Conn: firstProxy, remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53001}}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- server.ServeHTTPConn(context.Background(), firstProxy) }()
+	if _, err := firstClient.Write([]byte("bad request\r\n\r\n")); err != nil {
+		t.Fatalf("write first HTTP request: %v", err)
+	}
+	firstClient.Close()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first HTTP handler did not finish")
+	}
+
+	secondClient, secondProxy := net.Pipe()
+	defer secondClient.Close()
+	secondClient.SetDeadline(time.Now().Add(2 * time.Second))
+	secondProxy = &remoteAddrConn{Conn: secondProxy, remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53002}}
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- server.ServeHTTPConn(context.Background(), secondProxy) }()
+
+	response, err := http.ReadResponse(bufio.NewReader(secondClient), nil)
+	if err != nil {
+		t.Fatalf("read rate-limit response: %v", err)
+	}
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("HTTP status = %d, want 429", response.StatusCode)
+	}
+	select {
+	case err := <-secondDone:
+		if err == nil || !strings.Contains(err.Error(), "rate limit") {
+			t.Fatalf("handler error = %v, want rate-limit rejection", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second HTTP handler did not return after rate limit")
+	}
+}
+
+type remoteAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *remoteAddrConn) RemoteAddr() net.Addr {
+	return c.remote
+}
