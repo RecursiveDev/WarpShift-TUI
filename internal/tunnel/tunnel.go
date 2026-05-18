@@ -31,6 +31,92 @@ type Config struct {
 	PersistentKeepalive int
 }
 
+// MTUProbe checks whether a candidate MTU is usable. Callers inject fakes in tests.
+type MTUProbe func(context.Context, int) (bool, error)
+
+// MTUDetectionConfig bounds MTU helper probing. It does not perform live probing by itself.
+type MTUDetectionConfig struct {
+	Min     int
+	Max     int
+	Step    int
+	Default int
+}
+
+// MTUDetectionResult describes a secret-safe MTU helper outcome.
+type MTUDetectionResult struct {
+	Selected int
+	ProbedOK bool
+	Attempts int
+	Error    string
+}
+
+// DefaultMTUDetectionConfig returns conservative WireGuard MTU helper bounds.
+func DefaultMTUDetectionConfig() MTUDetectionConfig {
+	return MTUDetectionConfig{Min: 1280, Max: 1420, Step: 10, Default: 1280}
+}
+
+// DetectMTU walks bounded MTU candidates using an injected probe and falls back safely.
+func DetectMTU(ctx context.Context, cfg MTUDetectionConfig, probe MTUProbe) (int, MTUDetectionResult, error) {
+	cfg = normalizeMTUDetectionConfig(cfg)
+	if probe == nil {
+		return cfg.Default, MTUDetectionResult{Selected: cfg.Default}, nil
+	}
+	result := MTUDetectionResult{Selected: cfg.Default}
+	for candidate, attempts := cfg.Max, 0; candidate >= cfg.Min && attempts < 32; candidate, attempts = candidate-cfg.Step, attempts+1 {
+		if err := ctx.Err(); err != nil {
+			return cfg.Default, result, err
+		}
+		result.Attempts++
+		ok, err := probe(ctx, candidate)
+		if err != nil {
+			result.Error = safeMTUProbeError(err)
+			continue
+		}
+		if ok {
+			result.Selected = candidate
+			result.ProbedOK = true
+			return candidate, result, nil
+		}
+	}
+	return cfg.Default, result, nil
+}
+
+func normalizeMTUDetectionConfig(cfg MTUDetectionConfig) MTUDetectionConfig {
+	defaults := DefaultMTUDetectionConfig()
+	if cfg.Min == 0 {
+		cfg.Min = defaults.Min
+	}
+	if cfg.Max == 0 {
+		cfg.Max = defaults.Max
+	}
+	if cfg.Step == 0 {
+		cfg.Step = defaults.Step
+	}
+	if cfg.Default == 0 {
+		cfg.Default = defaults.Default
+	}
+	if cfg.Min < 576 {
+		cfg.Min = 576
+	}
+	if cfg.Max < cfg.Min {
+		cfg.Max = cfg.Min
+	}
+	if cfg.Step < 1 {
+		cfg.Step = 1
+	}
+	if cfg.Default < cfg.Min || cfg.Default > cfg.Max {
+		cfg.Default = cfg.Min
+	}
+	return cfg
+}
+
+func safeMTUProbeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "mtu probe failed"
+}
+
 // RuntimeConfig is the fully rendered userspace WireGuard runtime configuration.
 type RuntimeConfig struct {
 	InterfaceAddresses []netip.Addr

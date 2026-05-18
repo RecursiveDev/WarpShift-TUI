@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -115,6 +116,39 @@ func TestNewDialerSanitizesBackendErrors(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), testPrivateKey) {
 		t.Fatalf("error leaked private key material: %v", err)
+	}
+}
+
+func TestDetectMTUUsesInjectedProbeWithoutLiveNetwork(t *testing.T) {
+	probed := []int{}
+	mtu, result, err := DetectMTU(context.Background(), MTUDetectionConfig{Min: 1280, Max: 1320, Step: 20, Default: 1280}, func(_ context.Context, candidate int) (bool, error) {
+		probed = append(probed, candidate)
+		return candidate <= 1300, nil
+	})
+	if err != nil {
+		t.Fatalf("DetectMTU returned unexpected error: %v", err)
+	}
+	if mtu != 1300 || result.Selected != 1300 {
+		t.Fatalf("selected MTU = %d result=%+v, want 1300", mtu, result)
+	}
+	if got := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(probed)), ","), "[]"); got != "1320,1300" {
+		t.Fatalf("probed candidates = %v, want [1320 1300]", probed)
+	}
+}
+
+func TestDetectMTUFallsBackToDefaultAndSanitizesProbeErrors(t *testing.T) {
+	secret := "private_key=do-not-print"
+	mtu, result, err := DetectMTU(context.Background(), MTUDetectionConfig{Min: 1280, Max: 1280, Step: 10, Default: 1280}, func(context.Context, int) (bool, error) {
+		return false, errors.New(secret)
+	})
+	if err != nil {
+		t.Fatalf("DetectMTU returned unexpected error: %v", err)
+	}
+	if mtu != 1280 || result.Selected != 1280 || result.ProbedOK {
+		t.Fatalf("fallback result = mtu=%d result=%+v, want safe default", mtu, result)
+	}
+	if strings.Contains(result.Error, secret) || result.Error != "mtu probe failed" {
+		t.Fatalf("probe error = %q, want sanitized failure", result.Error)
 	}
 }
 
