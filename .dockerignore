@@ -1,0 +1,52 @@
+# VCS metadata
+.git/
+.gitignore
+.gitattributes
+
+# CI (not needed in build context)
+.github/
+
+# Local configuration and secrets
+.env
+.env.*
+configs/*.local.toml
+configs/*.identity.json
+configs/*.wg.conf
+
+# Compose and deployment files (not needed in image)
+docker-compose.yml
+.dockerignore
+
+# Build and dependency management artifacts
+Makefile
+/docs
+bin/
+dist/
+build/
+
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+go.work
+go.work.sum
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+
+# Miscellaneous
+nul

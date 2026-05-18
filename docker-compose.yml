@@ -1,0 +1,79 @@
+# WarpShift-TUI private local Compose file.
+# This exposes the TUI binary with config and secret mounts suitable for
+# interactive local use. It is NOT designed for production server deployment.
+#
+# Usage:
+#   1. Copy configs/warpshift.example.toml to configs/warpshift.local.toml
+#      and customize it for your environment.
+#   2. Place your WARP identity JSON at configs/warpshift.identity.json
+#      (the path referenced by warpshift.local.toml).
+#   3. Build and start:
+#        docker compose build
+#        docker compose up
+#
+# CLI subcommands (one-off containers):
+#   docker compose run --rm warpshift config validate
+#   docker compose run --rm warpshift identity import \
+#     --input /home/warpshift/configs/warpshift.identity.json
+#   docker compose run --rm warpshift wireguard export
+#
+# Configuration mount-points:
+#   ./configs/warpshift.local.toml    -> /home/warpshift/configs/warpshift.local.toml
+#   ./configs/warpshift.identity.json -> /home/warpshift/configs/warpshift.identity.json
+
+services:
+  warpshift:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "${VERSION:-dev}"
+    image: warpshift-tui:local
+    container_name: warpshift-tui
+    stdin_open: true
+    tty: true
+    restart: "no"
+    working_dir: /home/warpshift
+
+    # Launch the TUI by default. Override for CLI subcommands:
+    #   docker compose run --rm warpshift <subcommand>
+    command: ["tui"]
+
+    # ---- Healthcheck ----
+    # Verifies the warpshift process is alive inside the container without
+    # exposing secrets or internal state. Uses pgrep so no HTTP endpoint is
+    # required. start_period allows the TUI to initialise before checks begin.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep warpshift || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # ---- Config mounts (user-consent workflows) ----
+    volumes:
+      # Mount your local TOML config. Create this from the example file first.
+      - ./configs/warpshift.local.toml:/home/warpshift/configs/warpshift.local.toml:ro
+      # Mount your local identity JSON (referenced by warpshift.local.toml).
+      - ./configs/warpshift.identity.json:/home/warpshift/configs/warpshift.identity.json:ro
+
+    # ---- Environment ----
+    environment:
+      - TZ=${TZ:-UTC}
+
+    # ---- Resource limits ----
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 64M
+
+    # ---- Logging ----
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
