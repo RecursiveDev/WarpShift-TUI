@@ -15,6 +15,7 @@ type Settings struct {
 	App       AppSettings
 	Warp      WarpSettings
 	Endpoint  EndpointSettings
+	Rotation  RotationSettings
 	Identity  IdentitySettings
 	WireGuard WireGuardSettings
 	Proxy     ProxySettings
@@ -33,6 +34,18 @@ type EndpointSettings struct {
 	Static []string
 }
 
+type RotationSettings struct {
+	Strategies           []string
+	TimedIntervalSeconds int
+	FailureThreshold     int
+	MaxLatencyMS         int
+	MaxAttempts          int
+	CooldownSeconds      int
+	HistoryPath          string
+	TargetLabels         []string
+	RegionLabels         []string
+}
+
 type IdentitySettings struct {
 	StorePath string
 }
@@ -44,18 +57,30 @@ type WireGuardSettings struct {
 	AllowedIPs          []string
 	PersistentKeepalive int
 	MTU                 int
+	AutoMTU             bool
+	MTUMin              int
+	MTUMax              int
+	MTUStep             int
 }
 
 type ProxySettings struct {
-	Enabled       bool
-	ListenAddress string
+	Enabled            bool
+	ListenAddress      string
+	AllowedClientCIDRs []string
+	RateLimitPerMinute int
+	RateLimitBurst     int
+	TLSMode            string
 }
 
 type SafetySettings struct {
-	AccountAutomation  bool
-	WARPPlusGeneration bool
-	DPIEvasion         bool
-	StreamingUnlock    bool
+	AccountAutomation         bool
+	AccountAutomationConsent  bool
+	WARPPlusGeneration        bool
+	WARPPlusGenerationConsent bool
+	DPIEvasion                bool
+	DPIEvasionConsent         bool
+	StreamingUnlock           bool
+	StreamingUnlockConsent    bool
 }
 
 // ValidationIssue describes one actionable, non-secret configuration problem.
@@ -94,6 +119,16 @@ func DefaultSettings() Settings {
 			"162.159.192.10:2408",
 			"162.159.193.20:2408",
 		}},
+		Rotation: RotationSettings{
+			Strategies:           []string{"latency", "failure"},
+			TimedIntervalSeconds: 60,
+			FailureThreshold:     1,
+			MaxAttempts:          3,
+			CooldownSeconds:      60,
+			HistoryPath:          "configs/warpshift.rotation-history.json",
+			TargetLabels:         []string{"general"},
+			RegionLabels:         []string{"global"},
+		},
 		Identity: IdentitySettings{StorePath: "configs/warpshift.identity.json"},
 		WireGuard: WireGuardSettings{
 			OutputPath:          "configs/warpshift.wg.conf",
@@ -102,8 +137,19 @@ func DefaultSettings() Settings {
 			AllowedIPs:          []string{"0.0.0.0/0", "::/0"},
 			PersistentKeepalive: 25,
 			MTU:                 1280,
+			AutoMTU:             false,
+			MTUMin:              1280,
+			MTUMax:              1420,
+			MTUStep:             10,
 		},
-		Proxy:  ProxySettings{Enabled: false, ListenAddress: "127.0.0.1:0"},
+		Proxy: ProxySettings{
+			Enabled:            false,
+			ListenAddress:      "127.0.0.1:0",
+			AllowedClientCIDRs: []string{"127.0.0.0/8", "::1/128"},
+			RateLimitPerMinute: 120,
+			RateLimitBurst:     20,
+			TLSMode:            "disabled",
+		},
 		Safety: SafetySettings{},
 	}
 }
@@ -158,6 +204,7 @@ func ValidateIssues(settings Settings) []ValidationIssue {
 			break
 		}
 	}
+	validateRotationSettings(settings.Rotation, add)
 	if strings.TrimSpace(settings.Identity.StorePath) == "" {
 		add("identity.store_path", "is required", "provide a local path for imported identity metadata")
 	}
@@ -185,21 +232,20 @@ func ValidateIssues(settings Settings) []ValidationIssue {
 	if settings.WireGuard.MTU != 0 && settings.WireGuard.MTU < 576 {
 		add("wireguard.mtu", "must be at least 576 when set", "use 0 or a value of 576 or greater")
 	}
+	validateMTUDetectionSettings(settings.WireGuard, add)
 	if err := validateListenAddress(settings.Proxy.ListenAddress); err != nil {
 		add("proxy.listen_address", err.Error(), "use host:port for the local proxy bind")
 	}
-	if settings.Safety.AccountAutomation {
-		add("safety.account_automation", "must remain disabled", "set to false")
+	validateProxyHardeningSettings(settings.Proxy, add)
+	requirePrivateUseConsent := func(enabled, consent bool, flagPath, consentPath, consentKey, workflow string) {
+		if enabled && !consent {
+			add(consentPath, fmt.Sprintf("requires explicit private-use consent for %s", workflow), fmt.Sprintf("set %s = true only for private use you control, or disable %s", consentKey, flagPath))
+		}
 	}
-	if settings.Safety.WARPPlusGeneration {
-		add("safety.warp_plus_generation", "must remain disabled", "set to false")
-	}
-	if settings.Safety.DPIEvasion {
-		add("safety.dpi_evasion", "must remain disabled", "set to false")
-	}
-	if settings.Safety.StreamingUnlock {
-		add("safety.streaming_unlock", "must remain disabled", "set to false")
-	}
+	requirePrivateUseConsent(settings.Safety.AccountAutomation, settings.Safety.AccountAutomationConsent, "safety.account_automation", "safety.account_automation_consent", "account_automation_consent", "account automation")
+	requirePrivateUseConsent(settings.Safety.WARPPlusGeneration, settings.Safety.WARPPlusGenerationConsent, "safety.warp_plus_generation", "safety.warp_plus_generation_consent", "warp_plus_generation_consent", "WARP+ workflows")
+	requirePrivateUseConsent(settings.Safety.DPIEvasion, settings.Safety.DPIEvasionConsent, "safety.dpi_evasion", "safety.dpi_evasion_consent", "dpi_evasion_consent", "DPI evasion")
+	requirePrivateUseConsent(settings.Safety.StreamingUnlock, settings.Safety.StreamingUnlockConsent, "safety.streaming_unlock", "safety.streaming_unlock_consent", "streaming_unlock_consent", "streaming unlock")
 	return issues
 }
 
@@ -234,6 +280,85 @@ func parseTOML(data []byte, settings *Settings) error {
 	return nil
 }
 
+func validateRotationSettings(settings RotationSettings, add func(string, string, string)) {
+	if len(settings.Strategies) == 0 {
+		add("rotation.strategies", "must include at least one strategy", "use latency, failure, and/or timed")
+		return
+	}
+	hasFailure := false
+	hasTimed := false
+	for _, strategy := range settings.Strategies {
+		switch strings.TrimSpace(strategy) {
+		case "latency":
+		case "failure":
+			hasFailure = true
+		case "timed":
+			hasTimed = true
+		default:
+			add("rotation.strategies", "contains an unsupported strategy", "use latency, failure, and/or timed")
+			return
+		}
+	}
+	if hasFailure && settings.FailureThreshold <= 0 {
+		add("rotation.failure_threshold", "must be positive for failure-based rotation", "set failure_threshold to 1 or greater")
+	}
+	if hasTimed && settings.TimedIntervalSeconds <= 0 {
+		add("rotation.timed_interval_seconds", "must be positive for timed rotation", "set timed_interval_seconds to 1 or greater")
+	}
+	if settings.MaxLatencyMS < 0 {
+		add("rotation.max_latency_ms", "cannot be negative", "use 0 or a positive latency budget")
+	}
+	if settings.MaxAttempts <= 0 {
+		add("rotation.max_attempts", "must be positive", "set max_attempts to a small positive value")
+	}
+	if settings.CooldownSeconds < 0 {
+		add("rotation.cooldown_seconds", "cannot be negative", "use 0 or a positive cooldown")
+	}
+	if strings.TrimSpace(settings.HistoryPath) == "" {
+		add("rotation.history_path", "is required", "provide a local path for rotation history")
+	}
+	for _, label := range append(append([]string{}, settings.TargetLabels...), settings.RegionLabels...) {
+		if strings.TrimSpace(label) == "" {
+			add("rotation.labels", "cannot contain empty labels", "remove empty target or region labels")
+			return
+		}
+	}
+}
+
+func validateMTUDetectionSettings(settings WireGuardSettings, add func(string, string, string)) {
+	if settings.MTUMin < 576 {
+		add("wireguard.mtu_min", "must be at least 576", "use a conservative lower bound such as 1280")
+	}
+	if settings.MTUMax < settings.MTUMin {
+		add("wireguard.mtu_range", "max must be greater than or equal to min", "set mtu_max at or above mtu_min")
+	}
+	if settings.MTUStep <= 0 {
+		add("wireguard.mtu_step", "must be positive", "use a bounded positive step such as 10")
+	}
+}
+
+func validateProxyHardeningSettings(settings ProxySettings, add func(string, string, string)) {
+	if len(settings.AllowedClientCIDRs) == 0 {
+		add("proxy.allowed_client_cidrs", "must include at least one CIDR", "keep localhost CIDRs unless explicitly exposing a private proxy")
+	}
+	for _, cidr := range settings.AllowedClientCIDRs {
+		if strings.TrimSpace(cidr) == "" {
+			add("proxy.allowed_client_cidrs", "cannot contain empty values", "remove empty CIDR entries")
+			break
+		}
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			add("proxy.allowed_client_cidrs", "must contain CIDR ranges", "use values such as 127.0.0.0/8 or ::1/128")
+			break
+		}
+	}
+	if settings.RateLimitPerMinute < 0 {
+		add("proxy.rate_limit_per_minute", "cannot be negative", "use 0 for defaults or a positive per-minute limit")
+	}
+	if settings.RateLimitBurst < 0 {
+		add("proxy.rate_limit_burst", "cannot be negative", "use 0 for defaults or a positive burst")
+	}
+}
+
 func applySetting(settings *Settings, section, key, raw string) error {
 	switch section + "." + key {
 	case "app.startup_mode":
@@ -246,6 +371,56 @@ func applySetting(settings *Settings, section, key, raw string) error {
 			return err
 		}
 		settings.Endpoint.Static = values
+	case "rotation.strategies":
+		values, err := parseStringArray(raw)
+		if err != nil {
+			return err
+		}
+		settings.Rotation.Strategies = values
+	case "rotation.timed_interval_seconds":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("timed_interval_seconds must be an integer")
+		}
+		settings.Rotation.TimedIntervalSeconds = value
+	case "rotation.failure_threshold":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("failure_threshold must be an integer")
+		}
+		settings.Rotation.FailureThreshold = value
+	case "rotation.max_latency_ms":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("max_latency_ms must be an integer")
+		}
+		settings.Rotation.MaxLatencyMS = value
+	case "rotation.max_attempts":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("max_attempts must be an integer")
+		}
+		settings.Rotation.MaxAttempts = value
+	case "rotation.cooldown_seconds":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("cooldown_seconds must be an integer")
+		}
+		settings.Rotation.CooldownSeconds = value
+	case "rotation.history_path":
+		settings.Rotation.HistoryPath = parseString(raw)
+	case "rotation.target_labels":
+		values, err := parseStringArray(raw)
+		if err != nil {
+			return err
+		}
+		settings.Rotation.TargetLabels = values
+	case "rotation.region_labels":
+		values, err := parseStringArray(raw)
+		if err != nil {
+			return err
+		}
+		settings.Rotation.RegionLabels = values
 	case "identity.store_path":
 		settings.Identity.StorePath = parseString(raw)
 	case "wireguard.output_path":
@@ -276,6 +451,30 @@ func applySetting(settings *Settings, section, key, raw string) error {
 			return fmt.Errorf("mtu must be an integer")
 		}
 		settings.WireGuard.MTU = value
+	case "wireguard.auto_mtu":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("auto_mtu must be a boolean")
+		}
+		settings.WireGuard.AutoMTU = value
+	case "wireguard.mtu_min":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("mtu_min must be an integer")
+		}
+		settings.WireGuard.MTUMin = value
+	case "wireguard.mtu_max":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("mtu_max must be an integer")
+		}
+		settings.WireGuard.MTUMax = value
+	case "wireguard.mtu_step":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("mtu_step must be an integer")
+		}
+		settings.WireGuard.MTUStep = value
 	case "proxy.enabled":
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
@@ -284,30 +483,74 @@ func applySetting(settings *Settings, section, key, raw string) error {
 		settings.Proxy.Enabled = value
 	case "proxy.listen_address":
 		settings.Proxy.ListenAddress = parseString(raw)
+	case "proxy.allowed_client_cidrs":
+		values, err := parseStringArray(raw)
+		if err != nil {
+			return err
+		}
+		settings.Proxy.AllowedClientCIDRs = values
+	case "proxy.rate_limit_per_minute":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("rate_limit_per_minute must be an integer")
+		}
+		settings.Proxy.RateLimitPerMinute = value
+	case "proxy.rate_limit_burst":
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("rate_limit_burst must be an integer")
+		}
+		settings.Proxy.RateLimitBurst = value
+	case "proxy.tls_mode":
+		settings.Proxy.TLSMode = parseString(raw)
 	case "safety.account_automation":
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return fmt.Errorf("account_automation must be a boolean")
 		}
 		settings.Safety.AccountAutomation = value
+	case "safety.account_automation_consent":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("account_automation_consent must be a boolean")
+		}
+		settings.Safety.AccountAutomationConsent = value
 	case "safety.warp_plus_generation":
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return fmt.Errorf("warp_plus_generation must be a boolean")
 		}
 		settings.Safety.WARPPlusGeneration = value
+	case "safety.warp_plus_generation_consent":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("warp_plus_generation_consent must be a boolean")
+		}
+		settings.Safety.WARPPlusGenerationConsent = value
 	case "safety.dpi_evasion":
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return fmt.Errorf("dpi_evasion must be a boolean")
 		}
 		settings.Safety.DPIEvasion = value
+	case "safety.dpi_evasion_consent":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("dpi_evasion_consent must be a boolean")
+		}
+		settings.Safety.DPIEvasionConsent = value
 	case "safety.streaming_unlock":
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
 			return fmt.Errorf("streaming_unlock must be a boolean")
 		}
 		settings.Safety.StreamingUnlock = value
+	case "safety.streaming_unlock_consent":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("streaming_unlock_consent must be a boolean")
+		}
+		settings.Safety.StreamingUnlockConsent = value
 	default:
 		return fmt.Errorf("unknown setting %s.%s", section, key)
 	}

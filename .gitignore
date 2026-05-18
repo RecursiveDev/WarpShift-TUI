@@ -23,6 +23,12 @@ go.work.sum
 *.local.*
 configs/*.local.toml
 
+# WARP identity and WireGuard profile outputs (contain private keys)
+configs/warpshift.identity.json
+configs/*.identity.json
+configs/warpshift.wg.conf
+configs/*.wg.conf
+
 # Editor and OS files
 .idea/
 .vscode/*

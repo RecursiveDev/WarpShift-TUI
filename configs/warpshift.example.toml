@@ -5,16 +5,30 @@
 startup_mode = "tui"
 
 [warp]
-# Local status only; WARP account registration and automation are intentionally unsupported.
+# Local status by default; advanced workflows are controlled by explicit user consent in [safety].
 status_source = "local"
 
 [endpoint]
 # Static known WARP endpoint sources used by local scans; no live discovery is performed by default.
 static = ["162.159.192.10:2408", "162.159.193.20:2408"]
 
+[rotation]
+# Local rotation policy and bounded Phase 5 streaming/IP rotation planning.
+# `rotation plan` and `rotation report` use local planning data; `rotation run` requires explicit user consent in [safety].
+strategies = ["latency", "failure", "timed"]
+timed_interval_seconds = 60
+failure_threshold = 2
+max_latency_ms = 0
+max_attempts = 3
+cooldown_seconds = 60
+history_path = "configs/warpshift.rotation-history.json"
+target_labels = ["general"]
+region_labels = ["global"]
+
 [identity]
 # Path for a manually imported local identity JSON file. Do not commit this file.
 store_path = "configs/warpshift.identity.json"
+# Named profiles are stored under the parent directory by `warpshift profile ...` commands.
 
 [wireguard]
 # Export path for a generated WireGuard profile derived from a manually imported identity.
@@ -24,13 +38,33 @@ dns = ["1.1.1.1", "1.0.0.1"]
 allowed_ips = ["0.0.0.0/0", "::/0"]
 persistent_keepalive = 25
 mtu = 1280
+# Phase 6 MTU helper is opt-in and requires an injected/local probe; no live probing is enabled by default.
+auto_mtu = false
+mtu_min = 1280
+mtu_max = 1420
+mtu_step = 10
 
 [proxy]
 enabled = false
 listen_address = "127.0.0.1:0"
+# Conservative client allowlist and per-client connection budget for SOCKS5/HTTP listeners.
+allowed_client_cidrs = ["127.0.0.0/8", "::1/128"]
+rate_limit_per_minute = 120
+rate_limit_burst = 20
+# TLS/HTTP2 mode records operator intent; listener behavior remains controlled by the selected runtime/flags.
+tls_mode = "disabled"
 
 [safety]
+# Advanced workflows require both the feature flag and its matching consent flag.
+# The user is responsible for enabling workflows only for accounts, networks, and traffic they control.
+# `warpshift account register/status/delete` require account_automation + account_automation_consent.
+# `warpshift license bind/status` require warp_plus_generation + warp_plus_generation_consent for user-owned keys.
+# `warpshift rotation run` requires streaming_unlock + streaming_unlock_consent.
 account_automation = false
+account_automation_consent = false
 warp_plus_generation = false
+warp_plus_generation_consent = false
 dpi_evasion = false
+dpi_evasion_consent = false
 streaming_unlock = false
+streaming_unlock_consent = false
