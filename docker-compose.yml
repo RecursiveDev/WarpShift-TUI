@@ -37,25 +37,44 @@ services:
 
     # Launch the TUI by default. Override for CLI subcommands:
     #   docker compose run --rm warpshift <subcommand>
+    #
+    # WireGuard requires NET_ADMIN; all other capabilities are dropped.
     command: ["tui"]
 
+    # ---- Security hardening ----
+    # Root filesystem is read-only. Use the state volume for write operations
+    # (identity import, WireGuard export, profile writes).
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64M
+
     # ---- Healthcheck ----
-    # Verifies the warpshift process is alive inside the container without
-    # exposing secrets or internal state. Uses pgrep so no HTTP endpoint is
-    # required. start_period allows the TUI to initialise before checks begin.
+    # Verifies the binary is executable by running 'warpshift version' inside
+    # the container. No HTTP endpoint or secrets are exposed. start_period
+    # gives the TUI time to initialise before the first health probe.
+    # When the healthcheck fails, Docker marks the container unhealthy.
+
     healthcheck:
-      test: ["CMD-SHELL", "pgrep warpshift || exit 1"]
+      test: ["CMD-SHELL", "warpshift version > /dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
 
-    # ---- Config mounts (user-consent workflows) ----
+    # ---- Volumes ----
     volumes:
-      # Mount your local TOML config. Create this from the example file first.
+      # Mount your local TOML config (read-only). Create from the example file first.
       - ./configs/warpshift.local.toml:/home/warpshift/configs/warpshift.local.toml:ro
-      # Mount your local identity JSON (referenced by warpshift.local.toml).
+      # Mount your local identity JSON (read-only, referenced by warpshift.local.toml).
       - ./configs/warpshift.identity.json:/home/warpshift/configs/warpshift.identity.json:ro
+      # Writable state directory for identity import, WireGuard export, and profile writes.
+      - ./state:/home/warpshift/state
 
     # ---- Environment ----
     environment:

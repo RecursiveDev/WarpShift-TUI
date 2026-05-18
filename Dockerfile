@@ -9,6 +9,7 @@ RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+ARG VERSION
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION:-dev}" \
     -o /out/warpshift ./cmd/warpshift
@@ -18,14 +19,17 @@ FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S warpshift && \
-    adduser -S warpshift -G warpshift
+    adduser -S warpshift -G warpshift && \
+    rm -rf /var/cache/apk/*
 
-COPY --from=build /out/warpshift /usr/local/bin/warpshift
+COPY --from=build --chown=warpshift:warpshift /out/warpshift /usr/local/bin/warpshift
 
 USER warpshift
 WORKDIR /home/warpshift
 
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 --start-period=5s \
-    CMD pgrep warpshift || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
+    CMD warpshift version > /dev/null 2>&1 || exit 1
+
+STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["warpshift"]
