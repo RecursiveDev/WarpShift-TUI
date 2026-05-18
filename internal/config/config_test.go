@@ -91,7 +91,7 @@ static = ["162.159.192.10:2408", "162.159.193.20:2408"]
 	}
 }
 
-func TestLoadAllowsPrivateUseSafetyFlagsWithExplicitConsent(t *testing.T) {
+func TestLoadAllowsImplementedPrivateUseSafetyFlagsWithExplicitConsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "warpshift.toml")
 	content := `
 [safety]
@@ -99,8 +99,8 @@ account_automation = true
 account_automation_consent = true
 warp_plus_generation = true
 warp_plus_generation_consent = true
-dpi_evasion = true
-dpi_evasion_consent = true
+dpi_evasion = false
+dpi_evasion_consent = false
 streaming_unlock = true
 streaming_unlock_consent = true
 `
@@ -118,11 +118,33 @@ streaming_unlock_consent = true
 	if !settings.Safety.WARPPlusGeneration || !settings.Safety.WARPPlusGenerationConsent {
 		t.Fatalf("WARP+ consent gate was not loaded: %+v", settings.Safety)
 	}
-	if !settings.Safety.DPIEvasion || !settings.Safety.DPIEvasionConsent {
-		t.Fatalf("DPI evasion consent gate was not loaded: %+v", settings.Safety)
+	if settings.Safety.DPIEvasion || settings.Safety.DPIEvasionConsent {
+		t.Fatalf("DPI evasion should stay disabled until implemented: %+v", settings.Safety)
 	}
 	if !settings.Safety.StreamingUnlock || !settings.Safety.StreamingUnlockConsent {
 		t.Fatalf("streaming unlock consent gate was not loaded: %+v", settings.Safety)
+	}
+}
+
+func TestLoadRejectsDPIEvasionEvenWithConsentUntilImplemented(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "warpshift.toml")
+	content := `
+[safety]
+dpi_evasion = true
+dpi_evasion_consent = true
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected DPI evasion activation to be rejected")
+	}
+	for _, want := range []string{"safety.dpi_evasion", "not implemented", "keep dpi_evasion = false"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("validation error missing %q in %q", want, err.Error())
+		}
 	}
 }
 
@@ -178,7 +200,8 @@ func TestValidateReportsMultipleActionableIssues(t *testing.T) {
 		"warp.status_source",
 		"set to local",
 		"identity.store_path",
-		"provide a local path",
+		"safety.dpi_evasion",
+		"not implemented",
 		"safety.dpi_evasion_consent",
 		"requires explicit private-use consent",
 	} {
@@ -295,17 +318,17 @@ func TestValidateRejectsUnsafePhase6Settings(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Proxy.AllowedClientCIDRs = []string{"not-a-cidr"}
 	settings.Proxy.RateLimitPerMinute = -1
+	settings.Proxy.TLSMode = "inbound"
 	settings.WireGuard.AutoMTU = true
 	settings.WireGuard.MTUMin = 500
 	settings.WireGuard.MTUMax = 400
 	settings.WireGuard.MTUStep = 0
-
 	err := Validate(settings)
 	if err == nil {
 		t.Fatal("expected invalid hardening settings to be rejected")
 	}
 	message := err.Error()
-	for _, want := range []string{"proxy.allowed_client_cidrs", "proxy.rate_limit_per_minute", "wireguard.mtu_min", "wireguard.mtu_range", "wireguard.mtu_step"} {
+	for _, want := range []string{"proxy.allowed_client_cidrs", "proxy.rate_limit_per_minute", "proxy.tls_mode", "wireguard.mtu_min", "wireguard.mtu_range", "wireguard.mtu_step"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("validation error missing %q in %q", want, message)
 		}

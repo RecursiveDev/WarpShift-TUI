@@ -51,7 +51,8 @@ listen_address = "127.0.0.1:0"
 allowed_client_cidrs = ["127.0.0.0/8", "::1/128"]
 rate_limit_per_minute = 120
 rate_limit_burst = 20
-# TLS/HTTP2 mode records operator intent; listener behavior remains controlled by the selected runtime/flags.
+# TLS/HTTP2 mode records operator intent; only "disabled" has runtime effect in this version.
+# Inbound TLS termination and outbound TLS wrapping are not implemented (see docs/architecture/ADR-003).
 tls_mode = "disabled"
 
 [safety]
@@ -60,6 +61,8 @@ tls_mode = "disabled"
 # `warpshift account register/status/delete` require account_automation + account_automation_consent.
 # `warpshift license bind/status` require warp_plus_generation + warp_plus_generation_consent for user-owned keys.
 # `warpshift rotation run` requires streaming_unlock + streaming_unlock_consent.
+# DPI evasion is not implemented in this version; the flags preserve config compatibility.
+# See docs/architecture/ADR-002-dpi-evasion-deferred.md for the deferred-scope decision.
 account_automation = false
 account_automation_consent = false
 warp_plus_generation = false

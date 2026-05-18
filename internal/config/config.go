@@ -90,6 +90,13 @@ type ValidationIssue struct {
 	Help    string
 }
 
+const (
+	unsupportedDPIEvasionMessage = "DPI evasion is not implemented in this version"
+	unsupportedDPIEvasionHelp    = "keep dpi_evasion = false until a future release implements bounded DPI behavior"
+	unsupportedTLSModeMessage    = "TLS proxy mode is not implemented in this version"
+	unsupportedTLSModeHelp       = "set tls_mode = \"disabled\" until inbound/outbound TLS proxy semantics are implemented"
+)
+
 // ValidationError groups validation issues so CLI/TUI callers can render richer UX.
 type ValidationError struct {
 	Issues []ValidationIssue
@@ -244,6 +251,9 @@ func ValidateIssues(settings Settings) []ValidationIssue {
 	}
 	requirePrivateUseConsent(settings.Safety.AccountAutomation, settings.Safety.AccountAutomationConsent, "safety.account_automation", "safety.account_automation_consent", "account_automation_consent", "account automation")
 	requirePrivateUseConsent(settings.Safety.WARPPlusGeneration, settings.Safety.WARPPlusGenerationConsent, "safety.warp_plus_generation", "safety.warp_plus_generation_consent", "warp_plus_generation_consent", "WARP+ workflows")
+	if settings.Safety.DPIEvasion {
+		add("safety.dpi_evasion", unsupportedDPIEvasionMessage, unsupportedDPIEvasionHelp)
+	}
 	requirePrivateUseConsent(settings.Safety.DPIEvasion, settings.Safety.DPIEvasionConsent, "safety.dpi_evasion", "safety.dpi_evasion_consent", "dpi_evasion_consent", "DPI evasion")
 	requirePrivateUseConsent(settings.Safety.StreamingUnlock, settings.Safety.StreamingUnlockConsent, "safety.streaming_unlock", "safety.streaming_unlock_consent", "streaming_unlock_consent", "streaming unlock")
 	return issues
@@ -356,6 +366,9 @@ func validateProxyHardeningSettings(settings ProxySettings, add func(string, str
 	}
 	if settings.RateLimitBurst < 0 {
 		add("proxy.rate_limit_burst", "cannot be negative", "use 0 for defaults or a positive burst")
+	}
+	if !strings.EqualFold(strings.TrimSpace(settings.TLSMode), "disabled") {
+		add("proxy.tls_mode", unsupportedTLSModeMessage, unsupportedTLSModeHelp)
 	}
 }
 
