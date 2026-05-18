@@ -17,8 +17,8 @@ A minimalist Terminal User Interface for managing, rotating, and proxying [Cloud
 - **Endpoint Rotation** — Automated rotation with latency, failure, and timed strategies; streaming/IP rotation with consent gates.
 - **SOCKS5 & HTTP Proxy** — Dual-protocol proxy with WARP tunnel backend, client allowlists, authentication, and rate limiting.
 - **WireGuard Profile Export** — Generate `.wg.conf` profiles from stored identities with configurable MTU and auto-detection.
-- **Account & License Management** — Register devices, check status, bind WARP+ licenses — all consent-gated.
-- **Safety-First Design** — Paired consent gates for account automation, streaming unlock, and WARP+ workflows.
+- **Account & License Management** — Register devices, check status, and bind user-owned WARP+ licenses — all consent-gated.
+- **Safety-First Design** — Paired consent gates for account automation, streaming unlock, and user-owned WARP+ license binding workflows.
 - **Docker & Compose Support** — Multi-stage Dockerfile with non-root user, healthcheck, and compose configuration for interactive TUI usage.
 
 ## Requirements
@@ -204,7 +204,7 @@ WarpShift-TUI/
 
 WarpShift-TUI is designed for **local, private-use operation**. Key safety features:
 
-- **Paired Consent Gates** — Advanced workflows (account registration, streaming rotation, WARP+ license binding) require both a feature flag and a matching consent flag in the `[safety]` configuration section. Both must be `true` for the workflow to activate. See [`docs/architecture/ADR-001-safety-consent-architecture.md`](docs/architecture/ADR-001-safety-consent-architecture.md) for details.
+- **Paired Consent Gates** — Advanced workflows (account registration, streaming rotation, user-owned WARP+ license binding) require both a feature flag and a matching consent flag in the `[safety]` configuration section. Both must be `true` for the workflow to activate. See [`docs/architecture/ADR-001-safety-consent-architecture.md`](docs/architecture/ADR-001-safety-consent-architecture.md) for details.
 - **Local-First** — No telemetry, no remote analytics. All state is stored locally.
 - **Secret-Safe Defaults** — Identity files, WireGuard configs, and local config overrides are git-ignored by default.
 - **Rate Limiting & Allowlists** — Proxy listeners default to localhost-only with per-client connection budgets.
@@ -212,7 +212,7 @@ WarpShift-TUI is designed for **local, private-use operation**. Key safety featu
 - **DPI Evasion (Not Implemented)** — The `dpi_evasion` config flags exist but no runtime DPI evasion logic is active. See [`docs/architecture/ADR-002-dpi-evasion-deferred.md`](docs/architecture/ADR-002-dpi-evasion-deferred.md).
 - **TLS Proxy Mode (Not Implemented)** — The `tls_mode` config field exists but only `"disabled"` has an effect. See [`docs/architecture/ADR-003-tls-proxy-mode-deferred.md`](docs/architecture/ADR-003-tls-proxy-mode-deferred.md).
 
-> **Important:** This tool is intended for managing WARP connections on accounts and networks you own or are authorized to use. Users are responsible for compliance with Cloudflare's terms of service.
+> **Important:** This tool is intended for managing WARP connections on accounts, licenses, and networks you own or are authorized to use. It does not implement third-party WARP+ generation, referral farming, credential sharing, mass account registration, provider-specific streaming bypass, or DPI evasion. Users are responsible for compliance with Cloudflare's terms of service.
 
 ## Contributing
 

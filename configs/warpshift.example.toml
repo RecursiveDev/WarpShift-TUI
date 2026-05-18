@@ -59,13 +59,13 @@ tls_mode = "disabled"
 # Advanced workflows require both the feature flag and its matching consent flag.
 # The user is responsible for enabling workflows only for accounts, networks, and traffic they control.
 # `warpshift account register/status/delete` require account_automation + account_automation_consent.
-# `warpshift license bind/status` require warp_plus_generation + warp_plus_generation_consent for user-owned keys.
+# `warpshift license bind/status` require warp_plus_generation + warp_plus_generation_consent for user-owned WARP+ license binding only.
 # `warpshift rotation run` requires streaming_unlock + streaming_unlock_consent.
 # DPI evasion is not implemented in this version; the flags preserve config compatibility.
 # See docs/architecture/ADR-002-dpi-evasion-deferred.md for the deferred-scope decision.
 account_automation = false
 account_automation_consent = false
-warp_plus_generation = false
+warp_plus_generation = false # Backward-compatible name; enables user-owned WARP+ license binding, not third-party generation.
 warp_plus_generation_consent = false
 dpi_evasion = false
 dpi_evasion_consent = false
