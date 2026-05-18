@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -42,14 +43,15 @@ type ProxyDialerBuilder func(context.Context, warp.Identity, warp.Endpoint, tunn
 
 // Command provides the top-level command-line surface without calling os.Exit.
 type Command struct {
-	app                *app.App
-	stdout             io.Writer
-	stderr             io.Writer
-	tuiLauncher        TUILauncher
-	endpointProbe      EndpointProbe
-	targetProbe        TargetProbe
-	mtuProbe           MTUProbe
-	proxyDialerBuilder ProxyDialerBuilder
+	app                   *app.App
+	stdout                io.Writer
+	stderr                io.Writer
+	tuiLauncher           TUILauncher
+	endpointProbe         EndpointProbe
+	targetProbe           TargetProbe
+	targetProbeConfigured bool
+	mtuProbe              MTUProbe
+	proxyDialerBuilder    ProxyDialerBuilder
 }
 
 // WithTUILauncher injects a TUI launcher.
@@ -75,6 +77,7 @@ func WithTargetProbe(probe TargetProbe) Option {
 	return func(c *Command) {
 		if probe != nil {
 			c.targetProbe = probe
+			c.targetProbeConfigured = true
 		}
 	}
 }
@@ -105,7 +108,7 @@ func New(application *app.App, stdout, stderr io.Writer, options ...Option) *Com
 		stderr:             stderr,
 		tuiLauncher:        tui.Run,
 		endpointProbe:      disabledEndpointProbe,
-		targetProbe:        localTargetProbe,
+		targetProbe:        disabledTargetProbe,
 		mtuProbe:           disabledMTUProbe,
 		proxyDialerBuilder: defaultProxyDialerBuilder,
 	}
@@ -436,9 +439,8 @@ func (c *Command) runAccount(ctx context.Context, args []string) int {
 		if storePath == "" {
 			storePath = settings.Identity.StorePath
 		}
-		client, err := warp.NewAPIClient(warp.APIClientConfig{BaseURL: *baseURL})
-		if err != nil {
-			fmt.Fprintf(c.stderr, "warpshift account register: %v\n", err)
+		client, ok := c.newWARPAPIClient("account register", *baseURL)
+		if !ok {
 			return 2
 		}
 		if _, err := warp.RegisterAccount(ctx, warp.AccountRegistrationRequest{Client: client, StorePath: storePath, ExplicitConsent: true, AcknowledgedGate: true}); err != nil {
@@ -824,6 +826,10 @@ func (c *Command) runRotation(ctx context.Context, args []string) int {
 		if !ok {
 			return 2
 		}
+		if !c.targetProbeConfigured {
+			fmt.Fprintln(c.stderr, "warpshift rotation run: streaming target probe is not configured; inject a local probe to run target checks")
+			return 2
+		}
 		if strings.TrimSpace(*historyPath) != "" {
 			settings.Rotation.HistoryPath = *historyPath
 		}
@@ -854,7 +860,11 @@ func (c *Command) runRotation(ctx context.Context, args []string) int {
 			}
 		}
 		if err != nil {
-			fmt.Fprintf(c.stderr, "warpshift rotation run: %v\n", err)
+			if len(run.Attempts) > 0 && strings.TrimSpace(run.Attempts[len(run.Attempts)-1].Error) != "" {
+				fmt.Fprintf(c.stderr, "warpshift rotation run: %v: %s\n", err, run.Attempts[len(run.Attempts)-1].Error)
+			} else {
+				fmt.Fprintf(c.stderr, "warpshift rotation run: %v\n", err)
+			}
 			return 1
 		}
 		fmt.Fprintf(c.stdout, "rotation run selected: endpoint=%s profile=%s target_ok=%t latency_ms=%d attempts=%d\n", run.Selected.Endpoint, safeProfileName(run.Selected.ProfileName), run.Selected.TargetOK, run.Selected.LatencyMS, len(run.Attempts))
@@ -1315,12 +1325,70 @@ func (c *Command) loadAPIIdentityAndClient(command, identityPath, baseURL string
 		fmt.Fprintf(c.stderr, "warpshift %s: %v\n", command, err)
 		return nil, nil, false
 	}
-	client, err := warp.NewAPIClient(warp.APIClientConfig{BaseURL: baseURL})
-	if err != nil {
-		fmt.Fprintf(c.stderr, "warpshift %s: %v\n", command, err)
+	client, ok := c.newWARPAPIClient(command, baseURL)
+	if !ok {
 		return nil, nil, false
 	}
 	return identity, client, true
+}
+
+func (c *Command) newWARPAPIClient(command, baseURL string) (*warp.APIClient, bool) {
+	if err := validateCLIWARPAPIBaseURL(baseURL); err != nil {
+		fmt.Fprintf(c.stderr, "warpshift %s: %v\n", command, err)
+		return nil, false
+	}
+	client, err := warp.NewAPIClient(warp.APIClientConfig{BaseURL: baseURL})
+	if err != nil {
+		fmt.Fprintf(c.stderr, "warpshift %s: %v\n", command, err)
+		return nil, false
+	}
+	return client, true
+}
+
+func validateCLIWARPAPIBaseURL(baseURL string) error {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = warp.DefaultWARPAPIBaseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("warp api base url must be an absolute URL")
+	}
+	if parsed.User != nil {
+		return errors.New("warp api base url must not include userinfo")
+	}
+	if isDefaultWARPAPIBaseURL(parsed) || isLoopbackAPIBaseURL(parsed) {
+		return nil
+	}
+	return errors.New("custom WARP API base URLs are limited to localhost/loopback test servers; use the default official Cloudflare WARP API for production")
+}
+
+func isDefaultWARPAPIBaseURL(parsed *url.URL) bool {
+	official, err := url.Parse(warp.DefaultWARPAPIBaseURL)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, official.Scheme) && strings.EqualFold(parsed.Host, official.Host) && cleanURLPath(parsed.Path) == cleanURLPath(official.Path)
+}
+
+func isLoopbackAPIBaseURL(parsed *url.URL) bool {
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func cleanURLPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return ""
+	}
+	return strings.TrimRight(value, "/")
 }
 
 func safeDisplayValue(value string) string {
@@ -1458,8 +1526,8 @@ func disabledMTUProbe(context.Context, int) (bool, error) {
 	return false, nil
 }
 
-func localTargetProbe(context.Context, warp.StreamingRotationCandidate, []string) warp.StreamingTargetProbeResult {
-	return warp.StreamingTargetProbeResult{OK: true}
+func disabledTargetProbe(context.Context, warp.StreamingRotationCandidate, []string) warp.StreamingTargetProbeResult {
+	return warp.StreamingTargetProbeResult{OK: false, Error: "streaming target probe is not configured; inject a local probe to run target checks"}
 }
 
 func (c *Command) printHelp() {
@@ -1505,10 +1573,10 @@ Safety boundaries:
   - manual identity import remains available as a consent-free local path
   - profile storage uses named local identities
   - endpoint pool expansion is deterministic and local-first
-  - rotation plan/report are local-first; rotation run requires safety.streaming_unlock_consent
+  - rotation plan/report are local-first; rotation run requires safety.streaming_unlock_consent and an injected target probe
   - account automation requires safety.account_automation_consent
-  - WARP+ license workflows require safety.warp_plus_generation_consent
-  - DPI-related workflows require explicit user consent when implemented
+  - WARP+ license binding requires safety.warp_plus_generation_consent for user-owned keys
+  - DPI-related workflows remain unimplemented until a dedicated ADR approves a bounded design
   - localhost proxy defaults
   - authentication required for remote proxy binds
   - proxy allowlisting and rate limiting

@@ -120,10 +120,10 @@ func TestRunHelpDocumentsCommandsAndSafeScope(t *testing.T) {
 		"manual identity import remains available as a consent-free local path",
 		"profile storage uses named local identities",
 		"endpoint pool expansion is deterministic and local-first",
-		"rotation plan/report are local-first; rotation run requires safety.streaming_unlock_consent",
+		"rotation plan/report are local-first; rotation run requires safety.streaming_unlock_consent and an injected target probe",
 		"account automation requires safety.account_automation_consent",
-		"WARP+ license workflows require safety.warp_plus_generation_consent",
-		"DPI-related workflows require explicit user consent",
+		"WARP+ license binding requires safety.warp_plus_generation_consent for user-owned keys",
+		"DPI-related workflows remain unimplemented",
 		"localhost proxy defaults",
 		"authentication required for remote proxy binds",
 		"proxy allowlisting and rate limiting",
@@ -512,6 +512,60 @@ func TestAccountAndLicenseCLIRequireConsentBeforeNetwork(t *testing.T) {
 	}
 	if called {
 		t.Fatal("CLI contacted API before consent")
+	}
+}
+
+func TestAccountAndLicenseCLIRejectUnsafeRemoteAPIBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writePrivateUseConfig(t, dir, true, true)
+	storePath := filepath.Join(dir, "identity.json")
+	licenseKey := "license-secret-value"
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"account", "register", "--config", configPath, "--store", storePath, "--api-base-url", "https://example.com/v0a2158"})
+	if exitCode != 2 {
+		t.Fatalf("account register exit code = %d, want 2", exitCode)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "localhost/loopback test servers") {
+		t.Fatalf("expected loopback-only API base URL guidance; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	writeManualIdentityWithToken(t, storePath, base64.StdEncoding.EncodeToString([]byte("12345678901234567890123456789012")))
+	exitCode = command.Run(context.Background(), []string{"license", "bind", "--config", configPath, "--identity", storePath, "--license-key", licenseKey, "--api-base-url", "https://example.com/v0a2158"})
+	if exitCode != 2 {
+		t.Fatalf("license bind exit code = %d, want 2", exitCode)
+	}
+	output := stdout.String() + stderr.String()
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "localhost/loopback test servers") {
+		t.Fatalf("expected loopback-only license guidance; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	for _, secret := range []string{licenseKey, "token-secret-value", "device-secret-id"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("remote API base URL rejection leaked secret %q in output=%q", secret, output)
+		}
+	}
+}
+
+func TestLicenseCLIRejectsGenerationSubcommandsWithoutNetwork(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"license", "generate", "--api-base-url", server.URL, "--license-key", "license-secret-value"})
+	if exitCode != 2 {
+		t.Fatalf("license generate exit code = %d, want 2", exitCode)
+	}
+	output := stdout.String() + stderr.String()
+	if !strings.Contains(stderr.String(), "unknown subcommand") || strings.Contains(output, "license-secret-value") {
+		t.Fatalf("expected unknown-subcommand rejection without secret echo; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if called {
+		t.Fatal("unsupported WARP+ generation command contacted API")
 	}
 }
 
@@ -1082,6 +1136,24 @@ func TestRotationPlanRunReportConsentGatedAndLocalProbes(t *testing.T) {
 	}
 }
 
+func TestRotationRunDefaultTargetProbeFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	historyPath := filepath.Join(dir, "rotation-history-default.json")
+	configPath := writeStreamingRotationConfig(t, dir, true, historyPath)
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"rotation", "run", "--config", configPath, "--history", historyPath, "--max-attempts", "1", "--target-label", "general"})
+	if exitCode != 2 {
+		t.Fatalf("rotation run default probe exit code = %d, want 2", exitCode)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "streaming target probe is not configured") {
+		t.Fatalf("expected fail-closed target probe guidance; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
+		t.Fatalf("default target probe should fail closed before writing history; stat err=%v", err)
+	}
+}
+
 type fakeProxyDialer struct{}
 
 func (fakeProxyDialer) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -1274,5 +1346,22 @@ func writeManualIdentity(t *testing.T, path, privateKey string) {
 `, privateKey)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write identity: %v", err)
+	}
+}
+
+func writeManualIdentityWithToken(t *testing.T, path, privateKey string) {
+	t.Helper()
+	content := fmt.Sprintf(`{
+  "device_id": "device-secret-id",
+  "token": "token-secret-value",
+  "private_key": %q,
+  "interface_addresses": ["172.16.0.2/32"],
+  "peer_public_key": "peer-public-key",
+  "endpoint": "engage.cloudflareclient.com:2408",
+  "dns": ["1.1.1.1"]
+}
+`, privateKey)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write identity with token: %v", err)
 	}
 }
