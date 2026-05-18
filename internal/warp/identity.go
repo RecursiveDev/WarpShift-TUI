@@ -18,6 +18,10 @@ import (
 type ManualIdentity struct {
 	DeviceID           string   `json:"device_id"`
 	ClientID           string   `json:"client_id,omitempty"`
+	Token              string   `json:"token,omitempty"`
+	AccountID          string   `json:"account_id,omitempty"`
+	AccountType        string   `json:"account_type,omitempty"`
+	License            string   `json:"license,omitempty"`
 	PrivateKey         string   `json:"private_key"`
 	InterfaceAddresses []string `json:"interface_addresses"`
 	PeerPublicKey      string   `json:"peer_public_key"`
@@ -39,6 +43,10 @@ func ImportManualIdentity(manual ManualIdentity) (*Identity, error) {
 	identity := Identity{
 		DeviceID:           strings.TrimSpace(manual.DeviceID),
 		ClientID:           clientID,
+		Token:              strings.TrimSpace(manual.Token),
+		AccountID:          strings.TrimSpace(manual.AccountID),
+		AccountType:        strings.TrimSpace(manual.AccountType),
+		License:            strings.TrimSpace(manual.License),
 		PrivateKey:         strings.TrimSpace(manual.PrivateKey),
 		InterfaceAddresses: trimStrings(manual.InterfaceAddresses),
 		PeerPublicKey:      strings.TrimSpace(manual.PeerPublicKey),
