@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     -o /out/warpshift ./cmd/warpshift
 
 # ---- Runtime Stage ----
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S warpshift && \
