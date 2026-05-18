@@ -1,7 +1,7 @@
 # WarpShift-TUI build and release automation.
 # Usage:
 #   make build              Build for the current OS/arch
-#   make build-all          Cross-compile for linux, darwin, windows (amd64)
+#   make build-all          Cross-compile for linux, darwin, windows (amd64 + arm64)
 #   make test               Run Go tests with race detection
 #   make vet                Run Go vet
 #   make lint               Run golangci-lint (requires local install)
@@ -42,10 +42,12 @@ build: ## Build binary for current OS/arch
 	$(GO_BUILD) -o $(BUILD_DIR)/warpshift$(if $(filter Windows_NT,$(OS)),.exe) ./cmd/warpshift
 
 .PHONY: build-all
-build-all: $(BUILD_DIR) ## Cross-compile for linux, darwin, windows (amd64)
+build-all: $(BUILD_DIR) ## Cross-compile for linux, darwin, windows (amd64 + arm64)
 	@mkdir -p $(DIST_DIR)
 	@echo "=== linux/amd64 ==="
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 $(GO_BUILD) -o $(DIST_DIR)/warpshift-linux-amd64   ./cmd/warpshift
+	@echo "=== linux/arm64 ==="
+	CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 $(GO_BUILD) -o $(DIST_DIR)/warpshift-linux-arm64   ./cmd/warpshift
 	@echo "=== darwin/amd64 ==="
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 $(GO_BUILD) -o $(DIST_DIR)/warpshift-darwin-amd64  ./cmd/warpshift
 	@echo "=== darwin/arm64 ==="
