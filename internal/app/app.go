@@ -11,7 +11,7 @@ type Metadata struct {
 	Version string
 }
 
-// App owns process-wide application metadata and safe capability boundaries.
+// App owns process-wide application metadata and capability boundaries.
 type App struct {
 	metadata Metadata
 }
@@ -41,7 +41,7 @@ func (a *App) Version() string {
 	return a.metadata.Version
 }
 
-// SafeCapabilities returns the approved foundation areas exposed by this skeleton.
+// SafeCapabilities returns the capability areas exposed by the application.
 func (a *App) SafeCapabilities() []string {
 	return []string{
 		"CLI command surface",

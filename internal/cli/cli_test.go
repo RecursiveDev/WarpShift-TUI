@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,19 +94,38 @@ func TestRunHelpDocumentsCommandsAndSafeScope(t *testing.T) {
 		"config validate",
 		"identity import",
 		"identity inspect",
+		"profile import",
+		"profile list",
+		"profile show",
+		"profile switch",
+		"profile delete",
 		"wireguard export",
+		"wireguard mtu",
 		"trace parse",
 		"endpoint scan",
-		"proxy validate",
+		"endpoint pool",
+		"rotation inspect",
+		"rotation plan",
+		"rotation run",
+		"rotation report",
 		"proxy start",
-		"manual identity import only",
+		"account register",
+		"account status",
+		"account delete",
+		"license bind",
+		"license status",
+		"manual identity import remains available as a consent-free local path",
+		"profile storage uses named local identities",
+		"endpoint pool expansion is deterministic and local-first",
+		"rotation plan/report are local-first; rotation run requires safety.streaming_unlock_consent",
+		"account automation requires safety.account_automation_consent",
+		"WARP+ license workflows require safety.warp_plus_generation_consent",
+		"DPI-related workflows require explicit user consent",
 		"localhost proxy defaults",
 		"authentication required for remote proxy binds",
-		"no account registration",
-		"no WARP+ generation",
-		"no DPI evasion",
-		"no streaming unlock",
-		"no Docker workflows",
+		"proxy allowlisting and rate limiting",
+		"WireGuard MTU helper uses injected probes",
+		"users are responsible for enabled private-use workflows",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help output missing %q in %q", want, help)
@@ -195,8 +217,8 @@ streaming_unlock = true
 		"configuration validation failed",
 		"- app.startup_mode:",
 		"set to tui or cli",
-		"- safety.streaming_unlock:",
-		"must remain disabled",
+		"- safety.streaming_unlock_consent:",
+		"requires explicit private-use consent",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr missing %q in %q", want, stderr.String())
@@ -217,7 +239,7 @@ func TestIdentityImportAndInspectDoNotPrintSecrets(t *testing.T) {
 		t.Fatalf("import exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
 	}
 	if strings.Contains(stdout.String()+stderr.String(), secret) {
-		t.Fatalf("identity import printed secret material: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		t.Fatal("identity import printed private key material")
 	}
 	if !strings.Contains(stdout.String(), "manual identity imported") {
 		t.Fatalf("stdout = %q, want import confirmation", stdout.String())
@@ -231,7 +253,7 @@ func TestIdentityImportAndInspectDoNotPrintSecrets(t *testing.T) {
 	}
 	output := stdout.String() + stderr.String()
 	if strings.Contains(output, secret) || strings.Contains(output, "peer-public-key") {
-		t.Fatalf("identity inspect printed key material: %q", output)
+		t.Fatal("identity inspect printed key material")
 	}
 	for _, want := range []string{"identity present", "interface_addresses=1", "dns=1", "endpoint=engage.cloudflareclient.com:2408"} {
 		if !strings.Contains(stdout.String(), want) {
@@ -268,7 +290,7 @@ func TestIdentityInspectSurfacesPermissionGuidanceWithoutSecrets(t *testing.T) {
 		}
 	}
 	if strings.Contains(message, secret) {
-		t.Fatalf("permission guidance leaked private key material: %q", message)
+		t.Fatal("permission guidance leaked private key material")
 	}
 }
 
@@ -290,7 +312,7 @@ func TestWireGuardExportDoesNotPrintProfileSecrets(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
 	}
 	if strings.Contains(stdout.String()+stderr.String(), secret) {
-		t.Fatalf("wireguard export printed private key: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		t.Fatal("wireguard export printed private key material")
 	}
 	profile, err := os.ReadFile(output)
 	if err != nil {
@@ -317,6 +339,158 @@ func TestTraceParseReportsStatusWithoutNetwork(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("trace output missing %q in %q", want, stdout.String())
 		}
+	}
+}
+
+func TestAccountRegisterStatusDeleteAndLicenseCLIUseFakeAPIWithConsent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writePrivateUseConfig(t, dir, true, true)
+	storePath := filepath.Join(dir, "identity.json")
+	licenseKey := "license-secret-value"
+	requests := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/reg":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode registration request: %v", err)
+			}
+			if strings.TrimSpace(body["key"]) == "" {
+				t.Fatal("registration request missing public key")
+			}
+			writeCLIAPIStatus(t, w, "limited")
+		case r.Method == http.MethodGet && r.URL.Path == "/reg/device-secret-id":
+			if r.Header.Get("Authorization") != "Bearer token-secret-value" {
+				t.Fatal("Authorization header did not contain expected bearer token")
+			}
+			writeCLIAPIStatus(t, w, "limited")
+		case r.Method == http.MethodPatch && r.URL.Path == "/reg/device-secret-id/account":
+			if r.Header.Get("Authorization") != "Bearer token-secret-value" {
+				t.Fatal("Authorization header did not contain expected bearer token")
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode license request: %v", err)
+			}
+			if body["license"] != licenseKey {
+				t.Fatal("license request body did not contain submitted key")
+			}
+			writeCLIAPIStatus(t, w, "premium")
+		case r.Method == http.MethodDelete && r.URL.Path == "/reg/device-secret-id":
+			if r.Header.Get("Authorization") != "Bearer token-secret-value" {
+				t.Fatal("Authorization header did not contain expected bearer token")
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected API request: method=%s pathRecognized=%t", r.Method, isExpectedPhase2APIPath(r.URL.Path))
+		}
+	}))
+	defer server.Close()
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"account", "register", "--config", configPath, "--store", storePath, "--api-base-url", server.URL})
+	if exitCode != 0 {
+		t.Fatalf("account register exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	registrationOutput := stdout.String() + stderr.String()
+	if strings.Contains(registrationOutput, "device-secret-id") || strings.Contains(registrationOutput, "token-secret-value") {
+		t.Fatal("registration output leaked sensitive material")
+	}
+	if !strings.Contains(stdout.String(), "WARP account registered") {
+		t.Fatalf("registration output missing confirmation: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"account", "status", "--config", configPath, "--identity", storePath, "--api-base-url", server.URL})
+	if exitCode != 0 {
+		t.Fatalf("account status exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	statusOutput := stdout.String() + stderr.String()
+	if strings.Contains(statusOutput, "device-secret-id") {
+		t.Fatal("status output leaked identity material")
+	}
+	if !strings.Contains(stdout.String(), "account_type=limited") {
+		t.Fatalf("status output missing safe status: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"license", "bind", "--config", configPath, "--identity", storePath, "--license-key", licenseKey, "--api-base-url", server.URL})
+	if exitCode != 0 {
+		t.Fatalf("license bind exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	licenseOutput := stdout.String() + stderr.String()
+	if strings.Contains(licenseOutput, licenseKey) {
+		t.Fatal("license output leaked key material")
+	}
+	if !strings.Contains(stdout.String(), "WARP+ license bound") {
+		t.Fatalf("license output missing confirmation: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"account", "delete", "--config", configPath, "--identity", storePath, "--api-base-url", server.URL, "--remove-local"})
+	if exitCode != 0 {
+		t.Fatalf("account delete exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "WARP device deregistered") || !strings.Contains(stdout.String(), "local identity removed") {
+		t.Fatalf("delete output missing cleanup confirmation: %q", stdout.String())
+	}
+	if _, err := os.Stat(storePath); !os.IsNotExist(err) {
+		t.Fatalf("identity store still exists after --remove-local: err=%v", err)
+	}
+	expectedRequests := []struct {
+		label string
+		value string
+	}{
+		{label: "registration", value: "POST /reg"},
+		{label: "status lookup", value: "GET /reg/device-secret-id"},
+		{label: "license bind", value: "PATCH /reg/device-secret-id/account"},
+		{label: "delete", value: "DELETE /reg/device-secret-id"},
+	}
+	for _, expected := range expectedRequests {
+		if !containsString(requests, expected.value) {
+			t.Fatalf("API request sequence missing %s request; requestCount=%d", expected.label, len(requests))
+		}
+	}
+}
+
+func TestAccountAndLicenseCLIRequireConsentBeforeNetwork(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writePrivateUseConfig(t, dir, false, false)
+	storePath := filepath.Join(dir, "identity.json")
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"account", "register", "--config", configPath, "--store", storePath, "--api-base-url", server.URL})
+	if exitCode != 2 {
+		t.Fatalf("account register exit code = %d, want 2", exitCode)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "account_automation_consent") {
+		t.Fatalf("expected consent guidance without stdout; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	writeManualIdentity(t, storePath, base64.StdEncoding.EncodeToString([]byte("12345678901234567890123456789012")))
+	exitCode = command.Run(context.Background(), []string{"license", "bind", "--config", configPath, "--identity", storePath, "--license-key", "license-secret-value", "--api-base-url", server.URL})
+	if exitCode != 2 {
+		t.Fatalf("license bind exit code = %d, want 2", exitCode)
+	}
+	if strings.Contains(stderr.String(), "license-secret-value") {
+		t.Fatal("license consent guidance leaked license key")
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "warp_plus_generation_consent") {
+		t.Fatalf("expected redacted license consent guidance; stdoutLen=%d hasConsentGuidance=%t", stdout.Len(), strings.Contains(stderr.String(), "warp_plus_generation_consent"))
+	}
+	if called {
+		t.Fatal("CLI contacted API before consent")
 	}
 }
 
@@ -416,6 +590,41 @@ func TestProxyValidateAndStartPreserveAuthBoundaries(t *testing.T) {
 	}
 }
 
+func TestProxyValidateDocumentsHardeningFlags(t *testing.T) {
+	command, stdout, stderr := newTestCommand(t)
+
+	exitCode := command.Run(context.Background(), []string{"proxy", "validate", "--listen", "127.0.0.1:0", "--allow-cidr", "127.0.0.0/8,::1/128", "--rate-limit-per-minute", "30", "--rate-limit-burst", "5"})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	for _, want := range []string{"proxy configuration valid", "allowlist=127.0.0.0/8,::1/128", "rate_limit=30/min burst=5"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("proxy validate output missing %q in %q", want, stdout.String())
+		}
+	}
+}
+
+func TestWireGuardMTUUsesInjectedProbe(t *testing.T) {
+	probed := []int{}
+	command, stdout, stderr := newTestCommand(t, WithMTUProbe(func(_ context.Context, candidate int) (bool, error) {
+		probed = append(probed, candidate)
+		return candidate <= 1300, nil
+	}))
+
+	exitCode := command.Run(context.Background(), []string{"wireguard", "mtu", "--min", "1280", "--max", "1320", "--step", "20"})
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if strings.Join(strings.Fields(fmt.Sprint(probed)), ",") != "[1320,1300]" {
+		t.Fatalf("probed candidates = %v, want [1320 1300]", probed)
+	}
+	for _, want := range []string{"mtu recommendation", "mtu=1300", "probed=true"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("wireguard mtu output missing %q in %q", want, stdout.String())
+		}
+	}
+}
+
 func TestProxyStartWithIdentityBuildsWarpTunnelDialer(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "identity.json")
@@ -455,7 +664,7 @@ func TestProxyStartWithIdentityBuildsWarpTunnelDialer(t *testing.T) {
 	}
 	output := stdout.String() + stderr.String()
 	if strings.Contains(output, secret) {
-		t.Fatalf("proxy start printed private key material: %q", output)
+		t.Fatal("proxy start printed private key material")
 	}
 	for _, want := range []string{"SOCKS5 proxy listening", "warp tunnel dialer ready", "auth=false", "proxy stopped"} {
 		if !strings.Contains(stdout.String(), want) {
@@ -598,6 +807,181 @@ func TestProxyStartServesHTTPOnlyWithInjectedTunnelDialerAndGracefulShutdown(t *
 	}
 }
 
+func TestProfileCLIWorkflowsDoNotPrintSecrets(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "manual.json")
+	storeDir := filepath.Join(dir, "profiles")
+	secret := "profile-cli-secret-private-key"
+	writeManualIdentity(t, input, secret)
+	command, stdout, stderr := newTestCommand(t)
+
+	exitCode := command.Run(context.Background(), []string{"profile", "import", "--name", "alpha", "--input", input, "--store-dir", storeDir})
+	if exitCode != 0 {
+		t.Fatalf("profile import exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String(), secret) {
+		t.Fatal("profile import printed private key material")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"profile", "switch", "--name", "alpha", "--store-dir", storeDir})
+	if exitCode != 0 {
+		t.Fatalf("profile switch exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"profile", "list", "--store-dir", storeDir})
+	if exitCode != 0 {
+		t.Fatalf("profile list exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "* alpha") {
+		t.Fatalf("profile list output missing active profile marker: %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"profile", "show", "--name", "alpha", "--store-dir", storeDir})
+	if exitCode != 0 {
+		t.Fatalf("profile show exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	showOutput := stdout.String() + stderr.String()
+	if strings.Contains(showOutput, secret) || strings.Contains(showOutput, "peer-public-key") {
+		t.Fatal("profile show printed key material")
+	}
+	if !strings.Contains(stdout.String(), "profile alpha") || !strings.Contains(stdout.String(), "endpoint=engage.cloudflareclient.com:2408") {
+		t.Fatalf("profile show output missing safe metadata: %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"profile", "delete", "--name", "../escape", "--store-dir", storeDir})
+	if exitCode != 2 {
+		t.Fatalf("profile delete traversal exit code = %d, want 2", exitCode)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"profile", "delete", "--name", "alpha", "--store-dir", storeDir})
+	if exitCode != 0 {
+		t.Fatalf("profile delete exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "profile alpha deleted") {
+		t.Fatalf("profile delete output missing confirmation: %q", stdout.String())
+	}
+}
+
+func TestEndpointPoolAndRotationCLIUseConsentAwarePlanningData(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "warpshift.toml")
+	content := `
+[rotation]
+strategies = ["latency", "failure", "timed"]
+timed_interval_seconds = 120
+failure_threshold = 2
+max_latency_ms = 150
+target_labels = ["general"]
+region_labels = ["global"]
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write rotation config: %v", err)
+	}
+
+	command, stdout, stderr := newTestCommand(t)
+	exitCode := command.Run(context.Background(), []string{"endpoint", "pool", "--max-per-prefix", "1", "--ipv6", "--port", "2408"})
+	if exitCode != 0 {
+		t.Fatalf("endpoint pool exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	poolOutput := stdout.String()
+	if !strings.Contains(poolOutput, "162.159.192.1:2408/udp") || !strings.Contains(poolOutput, "[2606:4700:d0::1]:2408/udp") {
+		t.Fatalf("endpoint pool output missing deterministic IPv4/IPv6 endpoints: %q", poolOutput)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"rotation", "inspect", "--config", configPath})
+	if exitCode != 0 {
+		t.Fatalf("rotation inspect exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	rotationOutput := stdout.String() + stderr.String()
+	for _, want := range []string{"strategies=latency,failure,timed", "failure_threshold=2", "timed_interval=120s", "target_labels=general", "region_labels=global"} {
+		if !strings.Contains(rotationOutput, want) {
+			t.Fatalf("rotation output missing %q in %q", want, rotationOutput)
+		}
+	}
+	if strings.Contains(strings.ToLower(rotationOutput), "streaming unlock probing") {
+		t.Fatalf("rotation inspect output implied direct streaming probing: %q", rotationOutput)
+	}
+}
+
+func TestRotationPlanRunReportConsentGatedAndLocalProbes(t *testing.T) {
+	dir := t.TempDir()
+	historyPath := filepath.Join(dir, "rotation-history.json")
+	withoutConsent := writeStreamingRotationConfig(t, dir, false, historyPath)
+	withConsent := writeStreamingRotationConfig(t, dir, true, historyPath)
+
+	probeCalls := 0
+	command, stdout, stderr := newTestCommand(t, WithTargetProbe(func(ctx context.Context, candidate warp.StreamingRotationCandidate, targetLabels []string) warp.StreamingTargetProbeResult {
+		probeCalls++
+		return warp.StreamingTargetProbeResult{OK: true, Latency: 25 * time.Millisecond}
+	}))
+
+	exitCode := command.Run(context.Background(), []string{"rotation", "plan", "--config", withoutConsent, "--max-candidates", "2", "--target-label", "general"})
+	if exitCode != 0 {
+		t.Fatalf("rotation plan exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if probeCalls != 0 {
+		t.Fatalf("rotation plan invoked target probe %d times, want 0", probeCalls)
+	}
+	for _, want := range []string{"rotation plan", "candidate", "162.159."} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("rotation plan output missing %q in %q", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"rotation", "run", "--config", withoutConsent, "--history", historyPath})
+	if exitCode != 2 {
+		t.Fatalf("rotation run without consent exit code = %d, want 2", exitCode)
+	}
+	if probeCalls != 0 {
+		t.Fatalf("rotation run without consent invoked target probe %d times, want 0", probeCalls)
+	}
+	if !strings.Contains(stderr.String(), "safety.streaming_unlock") {
+		t.Fatalf("rotation run without consent stderr = %q, want consent guidance", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"rotation", "run", "--config", withConsent, "--history", historyPath, "--max-attempts", "1", "--target-label", "general"})
+	if exitCode != 0 {
+		t.Fatalf("rotation run exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if probeCalls != 1 {
+		t.Fatalf("rotation run probe calls = %d, want 1", probeCalls)
+	}
+	if !strings.Contains(stdout.String(), "rotation run selected") || strings.Contains(strings.ToLower(stdout.String()+stderr.String()), "private_key") {
+		t.Fatalf("rotation run output = %q stderr=%q, want safe selection message", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = command.Run(context.Background(), []string{"rotation", "report", "--history", historyPath})
+	if exitCode != 0 {
+		t.Fatalf("rotation report exit code = %d, want 0; stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "rotation history") || !strings.Contains(stdout.String(), "target_ok=true") {
+		t.Fatalf("rotation report output = %q, want stored safe history", stdout.String())
+	}
+	for _, forbidden := range []string{"private_key", "peer_public_key", "license", "token"} {
+		if strings.Contains(strings.ToLower(stdout.String()+stderr.String()), forbidden) {
+			t.Fatalf("rotation CLI leaked forbidden marker %q in output=%q stderr=%q", forbidden, stdout.String(), stderr.String())
+		}
+	}
+}
+
 type fakeProxyDialer struct{}
 
 func (fakeProxyDialer) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -658,6 +1042,91 @@ func mustRead(t *testing.T, conn net.Conn, want []byte) {
 	if string(got) != string(want) {
 		t.Fatalf("read payload = %#v, want %#v", got, want)
 	}
+}
+
+func writePrivateUseConfig(t *testing.T, dir string, accountConsent, warpPlusConsent bool) string {
+	t.Helper()
+	path := filepath.Join(dir, "warpshift.toml")
+	content := fmt.Sprintf(`
+[app]
+startup_mode = "cli"
+[warp]
+status_source = "local"
+[identity]
+store_path = %q
+[wireguard]
+output_path = %q
+endpoint = "engage.cloudflareclient.com:2408"
+dns = ["1.1.1.1"]
+allowed_ips = ["0.0.0.0/0", "::/0"]
+persistent_keepalive = 25
+mtu = 1280
+[proxy]
+enabled = false
+listen_address = "127.0.0.1:0"
+[safety]
+account_automation = %t
+account_automation_consent = %t
+warp_plus_generation = %t
+warp_plus_generation_consent = %t
+dpi_evasion = false
+streaming_unlock = false
+`, filepath.Join(dir, "identity.json"), filepath.Join(dir, "warp.conf"), accountConsent, accountConsent, warpPlusConsent, warpPlusConsent)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write private-use config: %v", err)
+	}
+	return path
+}
+
+func writeCLIAPIStatus(t *testing.T, w http.ResponseWriter, accountType string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	clientID := base64.StdEncoding.EncodeToString([]byte{1, 2, 3})
+	if _, err := fmt.Fprintf(w, `{"id":"device-secret-id","token":"token-secret-value","account":{"id":"account-secret-id","account_type":%q},"config":{"client_id":%q,"interface":{"addresses":{"v4":"172.16.0.2","v6":"2606:4700:110:abcd::2"}},"peers":[{"public_key":"peer-public-key","endpoint":{"host":"engage.cloudflareclient.com:2408"}}]}}`, accountType, clientID); err != nil {
+		t.Fatalf("write API status: %v", err)
+	}
+}
+
+func isExpectedPhase2APIPath(path string) bool {
+	switch path {
+	case "/reg", "/reg/device-secret-id", "/reg/device-secret-id/account":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeStreamingRotationConfig(t *testing.T, dir string, consent bool, historyPath string) string {
+	t.Helper()
+	path := filepath.Join(dir, fmt.Sprintf("streaming-%t.toml", consent))
+	content := fmt.Sprintf(`
+[app]
+startup_mode = "cli"
+[rotation]
+strategies = ["latency", "failure"]
+failure_threshold = 1
+max_attempts = 2
+cooldown_seconds = 60
+history_path = %q
+target_labels = ["general"]
+region_labels = ["global"]
+[safety]
+streaming_unlock = %t
+streaming_unlock_consent = %t
+`, historyPath, consent, consent)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write streaming rotation config: %v", err)
+	}
+	return path
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSafeConfig(t *testing.T) string {
