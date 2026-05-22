@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -44,6 +45,58 @@ func TestNewServerDefaultsToLocalhost(t *testing.T) {
 
 	if got, want := server.Config().ListenAddr, "127.0.0.1:0"; got != want {
 		t.Fatalf("ListenAddr = %q, want %q", got, want)
+	}
+}
+
+func TestServeRecoversPanickingConnectionHandlerAndContinues(t *testing.T) {
+	server, err := NewServer(Config{}, &recordingDialer{})
+	if err != nil {
+		t.Fatalf("NewServer returned unexpected error: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	accepted := make(chan struct{}, 2)
+	done := make(chan error, 1)
+	go func() {
+		done <- server.serve(ctx, listener, func(_ context.Context, _ net.Conn) error {
+			accepted <- struct{}{}
+			panic("forced handler panic")
+		})
+	}()
+
+	for i := 0; i < 2; i++ {
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatalf("dial connection %d: %v", i+1, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		select {
+		case <-accepted:
+		case <-time.After(time.Second):
+			conn.Close()
+			t.Fatalf("connection %d was not accepted", i+1)
+		}
+		if _, err := conn.Read([]byte{0}); err == nil {
+			conn.Close()
+			t.Fatalf("connection %d stayed open after handler panic", i+1)
+		}
+		conn.Close()
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("serve error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve did not return after context cancellation")
 	}
 }
 

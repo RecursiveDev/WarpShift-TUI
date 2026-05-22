@@ -131,8 +131,17 @@ func (s *Server) serve(ctx context.Context, listener net.Listener, handler func(
 			}
 			return err
 		}
-		go func() { _ = handler(ctx, conn) }()
+		go serveConnection(ctx, conn, handler)
 	}
+}
+
+func serveConnection(ctx context.Context, conn net.Conn, handler func(context.Context, net.Conn) error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			_ = conn.Close()
+		}
+	}()
+	_ = handler(ctx, conn)
 }
 
 func validateConfig(config Config) (Config, error) {
@@ -244,7 +253,12 @@ func parseAllowedClientCIDRs(values []string) ([]*net.IPNet, error) {
 
 // ServeSOCKS5Conn handles one SOCKS5 client connection.
 func (s *Server) ServeSOCKS5Conn(ctx context.Context, client net.Conn) error {
-	defer client.Close()
+	relayStarted := false
+	defer func() {
+		if !relayStarted {
+			_ = client.Close()
+		}
+	}()
 	if err := s.checkClientAccess(client); err != nil {
 		return err
 	}
@@ -265,11 +279,12 @@ func (s *Server) ServeSOCKS5Conn(ctx context.Context, client net.Conn) error {
 		_ = writeSOCKS5Reply(client, socksReplyGeneralError)
 		return err
 	}
-	defer target.Close()
 
 	if err := writeSOCKS5Reply(client, socksReplySuccess); err != nil {
+		_ = target.Close()
 		return err
 	}
+	relayStarted = true
 	return relay(ctx, client, target, reader)
 }
 
@@ -445,9 +460,9 @@ func (s *Server) handleHTTPConnect(ctx context.Context, client net.Conn, reader 
 	if err != nil {
 		return writeHTTPError(client, http.StatusBadGateway)
 	}
-	defer target.Close()
 
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		_ = target.Close()
 		return err
 	}
 	return relay(ctx, client, target, reader)
