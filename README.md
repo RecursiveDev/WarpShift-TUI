@@ -127,14 +127,19 @@ warpshift trace parse --file trace.txt
 ### Docker Compose One-Off Commands
 
 ```bash
-# Validate config inside the container
-docker compose run --rm warpshift config validate
+# Validate the mounted local config inside the container
+docker compose run --rm warpshift config validate \
+  --config /home/warpshift/configs/warpshift.local.toml
 
-# Import identity
-docker compose run --rm warpshift identity import --input /home/warpshift/configs/warpshift.identity.json
+# Import identity from the read-only mount into writable state
+docker compose run --rm warpshift identity import \
+  --input /home/warpshift/configs/warpshift.identity.json \
+  --store /home/warpshift/state/warpshift.identity.json
 
-# Export WireGuard profile
-docker compose run --rm warpshift wireguard export
+# Export WireGuard profile from writable state
+docker compose run --rm warpshift wireguard export \
+  --identity /home/warpshift/state/warpshift.identity.json \
+  --output /home/warpshift/state/warpshift.wg.conf
 ```
 
 ## Configuration
@@ -204,13 +209,13 @@ WarpShift-TUI/
 
 WarpShift-TUI is designed for **local, private-use operation**. Key safety features:
 
-- **Paired Consent Gates** — Advanced workflows (account registration, streaming rotation, user-owned WARP+ license binding) require both a feature flag and a matching consent flag in the `[safety]` configuration section. Both must be `true` for the workflow to activate. See [`docs/architecture/ADR-001-safety-consent-architecture.md`](docs/architecture/ADR-001-safety-consent-architecture.md) for details.
+- **Paired Consent Gates** — Advanced workflows (account registration, streaming rotation, user-owned WARP+ license binding) require both a feature flag and a matching consent flag in the `[safety]` configuration section. Both must be `true` for the workflow to activate.
 - **Local-First** — No telemetry, no remote analytics. All state is stored locally.
 - **Secret-Safe Defaults** — Identity files, WireGuard configs, and local config overrides are git-ignored by default.
 - **Rate Limiting & Allowlists** — Proxy listeners default to localhost-only with per-client connection budgets.
 - **Non-Root Docker** — Container runs as a dedicated `warpshift` user with resource limits.
-- **DPI Evasion (Not Implemented)** — The `dpi_evasion` config flags exist but no runtime DPI evasion logic is active. See [`docs/architecture/ADR-002-dpi-evasion-deferred.md`](docs/architecture/ADR-002-dpi-evasion-deferred.md).
-- **TLS Proxy Mode (Not Implemented)** — The `tls_mode` config field exists but only `"disabled"` has an effect. See [`docs/architecture/ADR-003-tls-proxy-mode-deferred.md`](docs/architecture/ADR-003-tls-proxy-mode-deferred.md).
+- **DPI Evasion (Not Implemented)** — The `dpi_evasion` config flags exist for compatibility, but no runtime DPI evasion logic is active.
+- **TLS Proxy Mode (Not Implemented)** — The `tls_mode` config field exists but only `"disabled"` has an effect.
 
 > **Important:** This tool is intended for managing WARP connections on accounts, licenses, and networks you own or are authorized to use. It does not implement third-party WARP+ generation, referral farming, credential sharing, mass account registration, provider-specific streaming bypass, or DPI evasion. Users are responsible for compliance with Cloudflare's terms of service.
 
@@ -230,14 +235,9 @@ See [SUPPORT.md](SUPPORT.md) for getting help and filing bug reports.
 
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
-## Architecture Decisions
+## Architecture Notes
 
-Architecture decision records are located in [`docs/architecture/`](docs/architecture/):
-
-- [ADR-001: Safety and Consent Gate Architecture](docs/architecture/ADR-001-safety-consent-architecture.md) — How paired consent flags protect sensitive workflows.
-- [ADR-002: DPI Evasion — Deferred Scope](docs/architecture/ADR-002-dpi-evasion-deferred.md) — Why DPI evasion config exists but runtime is not implemented.
-- [ADR-003: TLS Proxy Mode — Deferred Scope](docs/architecture/ADR-003-tls-proxy-mode-deferred.md) — Why `tls_mode` is parsed but only `"disabled"` has effect.
-- [ADR-004: Bubble Tea v2 Migration — Deferred](docs/architecture/ADR-004-bubbletea-v2-migration-deferred.md) — Why the TUI remains on Bubble Tea v1.
+Architecture decision records are not currently maintained as standalone files. Safety gates, deferred DPI evasion, deferred TLS proxy mode, and the Bubble Tea v1 runtime model are documented in this README and in the annotated example config.
 
 ## Disclaimer
 
