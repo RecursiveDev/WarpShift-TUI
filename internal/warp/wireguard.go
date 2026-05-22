@@ -3,9 +3,6 @@ package warp
 import (
 	"fmt"
 	"net/netip"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -125,25 +122,8 @@ func validateProfileConfig(cfg WireGuardProfileConfig) error {
 }
 
 func writeSecureContent(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create parent directory: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("open secure file: %w", err)
-	}
-	_, writeErr := file.Write(data)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return fmt.Errorf("write secure file: %w", writeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close secure file: %w", closeErr)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			return fmt.Errorf("set secure file mode: %w", err)
-		}
+	if err := writeSecureFileAtomic(path, data); err != nil {
+		return fmt.Errorf("write secure content: %w", err)
 	}
 	return nil
 }

@@ -135,6 +135,34 @@ func TestStreamingRotationExecutorAndHistoryStoreAreSecretSafeAndLocal(t *testin
 	}
 }
 
+func TestStreamingRotationHistoryRejectsSymlinkOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+
+	dir := t.TempDir()
+	target := dir + string(os.PathSeparator) + "target-history.json"
+	link := dir + string(os.PathSeparator) + "rotation-history.json"
+	if err := os.WriteFile(target, []byte("[]\n"), 0o600); err != nil {
+		t.Fatalf("write rotation history target fixture: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create rotation history symlink fixture: %v", err)
+	}
+	store, err := NewStreamingRotationHistoryStore(link)
+	if err != nil {
+		t.Fatalf("NewStreamingRotationHistoryStore returned unexpected error: %v", err)
+	}
+
+	_, err = store.Load()
+	if err == nil {
+		t.Fatal("expected symlink rotation history path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Load error = %q, want symlink rejection", err.Error())
+	}
+}
+
 func TestSafeRotationErrorCategorizesProbeErrors(t *testing.T) {
 	tests := []struct {
 		name string

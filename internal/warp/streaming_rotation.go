@@ -438,30 +438,13 @@ func containsRotationErrorMarker(value string, markers []string) bool {
 }
 
 func writeRotationHistorySecure(path string, history []StreamingRotationResult) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create rotation history directory: %w", err)
-	}
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal rotation history: %w", err)
 	}
 	data = append(data, '\n')
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("open rotation history: %w", err)
-	}
-	_, writeErr := file.Write(data)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return fmt.Errorf("write rotation history: %w", writeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close rotation history: %w", closeErr)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			return fmt.Errorf("set rotation history permissions: %w", err)
-		}
+	if err := writeSecureFileAtomic(path, data); err != nil {
+		return fmt.Errorf("write rotation history: %w", err)
 	}
 	return nil
 }
@@ -470,9 +453,12 @@ func ensureRotationHistoryFileMode(path string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("stat rotation history: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to load symlink: %s", path)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("rotation history file permissions for %s are too open (%04o); chmod 600 %s before loading", path, info.Mode().Perm(), path)

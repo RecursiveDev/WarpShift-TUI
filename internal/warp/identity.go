@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -219,31 +218,13 @@ func validateHostPort(address string) error {
 }
 
 func writeJSONSecure(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create parent directory: %w", err)
-	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal identity: %w", err)
 	}
 	data = append(data, '\n')
-
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("open secure file: %w", err)
-	}
-	_, writeErr := file.Write(data)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return fmt.Errorf("write secure file: %w", writeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close secure file: %w", closeErr)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			return fmt.Errorf("set secure file mode: %w", err)
-		}
+	if err := writeSecureFileAtomic(path, data); err != nil {
+		return fmt.Errorf("write secure JSON file: %w", err)
 	}
 	return nil
 }
@@ -252,9 +233,12 @@ func ensureSecureFileMode(path string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("stat secure file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to load symlink: %s", path)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("identity file permissions for %s are too open (%04o); chmod 600 %s before loading", path, info.Mode().Perm(), path)

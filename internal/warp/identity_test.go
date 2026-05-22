@@ -70,6 +70,34 @@ func TestLoadIdentityRejectsInsecurePermissionsOnUnix(t *testing.T) {
 	}
 }
 
+func TestLoadIdentityRejectsSymlinkOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target-identity.json")
+	link := filepath.Join(dir, "identity.json")
+	data, err := json.Marshal(validManualIdentity())
+	if err != nil {
+		t.Fatalf("marshal manual identity: %v", err)
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatalf("write identity target fixture: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create identity symlink fixture: %v", err)
+	}
+
+	_, err = LoadIdentity(link)
+	if err == nil {
+		t.Fatal("expected symlink identity path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("LoadIdentity error = %q, want symlink rejection", err.Error())
+	}
+}
+
 func TestImportManualIdentityRejectsIncompleteInputWithoutEchoingSecret(t *testing.T) {
 	manual := validManualIdentity()
 	manual.Endpoint = ""
