@@ -7,92 +7,106 @@
 #      and customize it for your environment.
 #   2. Place your WARP identity JSON at configs/warpshift.identity.json
 #      (the path referenced by warpshift.local.toml).
-#   3. Build and start:
+#   3. Build and start the default no-NET_ADMIN TUI:
 #        docker compose build
 #        docker compose up
 #
-# CLI subcommands (one-off containers):
-#   docker compose run --rm warpshift config validate
+# Optional userspace tunnel profile (adds NET_ADMIN only when requested):
+#        docker compose --profile tunnel run --rm warpshift-tunnel tui
+#
+# CLI subcommands (one-off containers): use explicit paths because configs are read-only
+# and generated identity/profile state belongs under /home/warpshift/state.
+#   docker compose run --rm warpshift config validate \
+#     --config /home/warpshift/configs/warpshift.local.toml
 #   docker compose run --rm warpshift identity import \
-#     --input /home/warpshift/configs/warpshift.identity.json
-#   docker compose run --rm warpshift wireguard export
+#     --input /home/warpshift/configs/warpshift.identity.json \
+#     --store /home/warpshift/state/warpshift.identity.json
+#   docker compose run --rm warpshift wireguard export \
+#     --identity /home/warpshift/state/warpshift.identity.json \
+#     --output /home/warpshift/state/warpshift.wg.conf
 #
 # Configuration mount-points:
 #   ./configs/warpshift.local.toml    -> /home/warpshift/configs/warpshift.local.toml
 #   ./configs/warpshift.identity.json -> /home/warpshift/configs/warpshift.identity.json
 
+x-warpshift-service: &warpshift-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      VERSION: "${VERSION:-dev}"
+  image: warpshift-tui:local
+  stdin_open: true
+  tty: true
+  restart: "no"
+  working_dir: /home/warpshift
+
+  # ---- Security hardening ----
+  # Root filesystem is read-only. Use the state volume for write operations
+  # (identity import, WireGuard export, profile writes).
+  read_only: true
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:noexec,nosuid,nodev,size=64M
+
+  # ---- Healthcheck ----
+  # Verifies the binary is executable by running 'warpshift version' inside
+  # the container. No HTTP endpoint or secrets are exposed. start_period
+  # gives the TUI time to initialise before the first health probe.
+  # When the healthcheck fails, Docker marks the container unhealthy.
+  healthcheck:
+    test: ["CMD-SHELL", "warpshift version > /dev/null 2>&1 || exit 1"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 10s
+
+  # ---- Volumes ----
+  volumes:
+    # Mount your local TOML config (read-only). Create from the example file first.
+    - ./configs/warpshift.local.toml:/home/warpshift/configs/warpshift.local.toml:ro
+    # Mount your local identity JSON (read-only, referenced by warpshift.local.toml).
+    - ./configs/warpshift.identity.json:/home/warpshift/configs/warpshift.identity.json:ro
+    # Writable state directory for identity import, WireGuard export, and profile writes.
+    - ./state:/home/warpshift/state
+
+  # ---- Environment ----
+  environment:
+    - TZ=${TZ:-UTC}
+
+  # ---- Resource limits ----
+  deploy:
+    resources:
+      limits:
+        cpus: "1"
+        memory: 256M
+      reservations:
+        cpus: "0.25"
+        memory: 64M
+
+  # ---- Logging ----
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   warpshift:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        VERSION: "${VERSION:-dev}"
-    image: warpshift-tui:local
+    <<: *warpshift-service
     container_name: warpshift-tui
-    stdin_open: true
-    tty: true
-    restart: "no"
-    working_dir: /home/warpshift
-
     # Launch the TUI by default. Override for CLI subcommands:
     #   docker compose run --rm warpshift <subcommand>
-    #
-    # WireGuard requires NET_ADMIN; all other capabilities are dropped.
     command: ["tui"]
 
-    # ---- Security hardening ----
-    # Root filesystem is read-only. Use the state volume for write operations
-    # (identity import, WireGuard export, profile writes).
-    read_only: true
-    security_opt:
-      - "no-new-privileges:true"
-    cap_drop:
-      - ALL
+  warpshift-tunnel:
+    <<: *warpshift-service
+    profiles: ["tunnel"]
+    container_name: warpshift-tui-tunnel
+    # Opt-in profile for workflows that require WireGuard NET_ADMIN.
+    command: ["tui"]
     cap_add:
       - NET_ADMIN
-    tmpfs:
-      - /tmp:noexec,nosuid,nodev,size=64M
-
-    # ---- Healthcheck ----
-    # Verifies the binary is executable by running 'warpshift version' inside
-    # the container. No HTTP endpoint or secrets are exposed. start_period
-    # gives the TUI time to initialise before the first health probe.
-    # When the healthcheck fails, Docker marks the container unhealthy.
-
-    healthcheck:
-      test: ["CMD-SHELL", "warpshift version > /dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-    # ---- Volumes ----
-    volumes:
-      # Mount your local TOML config (read-only). Create from the example file first.
-      - ./configs/warpshift.local.toml:/home/warpshift/configs/warpshift.local.toml:ro
-      # Mount your local identity JSON (read-only, referenced by warpshift.local.toml).
-      - ./configs/warpshift.identity.json:/home/warpshift/configs/warpshift.identity.json:ro
-      # Writable state directory for identity import, WireGuard export, and profile writes.
-      - ./state:/home/warpshift/state
-
-    # ---- Environment ----
-    environment:
-      - TZ=${TZ:-UTC}
-
-    # ---- Resource limits ----
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 256M
-        reservations:
-          cpus: "0.25"
-          memory: 64M
-
-    # ---- Logging ----
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"

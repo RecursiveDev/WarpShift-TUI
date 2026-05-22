@@ -19,7 +19,6 @@ docker-compose.yml
 
 # Build and dependency management artifacts
 Makefile
-/docs
 bin/
 dist/
 build/

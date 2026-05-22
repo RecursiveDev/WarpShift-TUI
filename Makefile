@@ -17,6 +17,7 @@
 # ---- Metadata ----
 MODULE    := github.com/RecursiveDev/WarpShift-TUI
 VERSION   ?= dev
+DOCKER_TAG ?= warpshift-tui:local
 BUILD_DIR := build
 DIST_DIR  := dist
 
@@ -26,9 +27,9 @@ LDFLAGS      := -ldflags="$(LDFLAGS_BASE) $(LDFLAGS)"
 
 # ---- Go commands ----
 GO        := go
+HOST_GOOS := $(shell $(GO) env GOOS)
 GO_BUILD  := $(GO) build -trimpath $(LDFLAGS)
 GO_TEST   := $(GO) test -race -count=1
-
 # ---- Targets ----
 
 .PHONY: help
@@ -39,10 +40,10 @@ help: ## Show this help
 .PHONY: build
 build: ## Build binary for current OS/arch
 	@mkdir -p $(BUILD_DIR)
-	$(GO_BUILD) -o $(BUILD_DIR)/warpshift$(if $(filter Windows_NT,$(OS)),.exe) ./cmd/warpshift
+	$(GO_BUILD) -o $(BUILD_DIR)/warpshift$(if $(filter windows,$(HOST_GOOS)),.exe) ./cmd/warpshift
 
 .PHONY: build-all
-build-all: $(BUILD_DIR) ## Cross-compile for linux, darwin, windows (amd64 + arm64)
+build-all: ## Cross-compile for linux, darwin, windows (amd64 + arm64)
 	@mkdir -p $(DIST_DIR)
 	@echo "=== linux/amd64 ==="
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 $(GO_BUILD) -o $(DIST_DIR)/warpshift-linux-amd64   ./cmd/warpshift
@@ -68,7 +69,7 @@ vet: ## Run Go vet
 
 .PHONY: cover
 cover: ## Run tests and open coverage report
-	$(GO) test -coverprofile=coverage.out -covermode=atomic ./...
+	$(GO) test -race -coverprofile=coverage.out -covermode=atomic ./...
 	$(GO) tool cover -html=coverage.out
 
 .PHONY: lint
