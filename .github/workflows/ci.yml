@@ -47,6 +47,19 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Coverage threshold
+        env:
+          MIN_COVERAGE: "70.0"
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+          awk -v total="$total" -v min="$MIN_COVERAGE" 'BEGIN {
+            if (total + 0 < min + 0) {
+              printf "coverage %.1f%% is below required %.1f%%\n", total, min
+              exit 1
+            }
+            printf "coverage %.1f%% meets required %.1f%%\n", total, min
+          }'
+
       - name: Coverage report
         uses: actions/upload-artifact@v7
         if: always()
@@ -78,23 +91,33 @@ jobs:
 
   # ---- Binary build check ----
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.binary }})
     runs-on: ${{ matrix.os }}
     needs: test
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
             binary: warpshift-linux-amd64
+            goos: linux
+            goarch: amd64
           - os: ubuntu-latest
             binary: warpshift-linux-arm64
+            goos: linux
             goarch: arm64
           - os: windows-latest
             binary: warpshift-windows-amd64.exe
+            goos: windows
+            goarch: amd64
           - os: macos-latest
             binary: warpshift-darwin-amd64
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            binary: warpshift-darwin-arm64
+            goos: darwin
+            goarch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,7 +135,8 @@ jobs:
       - name: Build
         shell: bash
         env:
-          GOARCH: ${{ matrix.goarch || 'amd64' }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           go build -trimpath -ldflags="-s -w -X main.version=ci-${{ steps.version.outputs.short_sha }}" -o "${{ matrix.binary }}" ./cmd/warpshift
 
