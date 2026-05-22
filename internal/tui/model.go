@@ -6,11 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RecursiveDev/WarpShift-TUI/internal/textutil"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/warp"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+const maxNotifications = 100
 
 // Snapshot is a fully local, already-collected view of application state.
 type Snapshot struct {
@@ -383,6 +386,10 @@ func (m Model) selectedPaletteEntry() (paletteEntry, bool) {
 
 func (m *Model) appendNotification(level, message string) {
 	m.snapshot.Notifications = append(m.snapshot.Notifications, NotificationSnapshot{Level: level, Message: message})
+	if overflow := len(m.snapshot.Notifications) - maxNotifications; overflow > 0 {
+		copy(m.snapshot.Notifications, m.snapshot.Notifications[overflow:])
+		m.snapshot.Notifications = m.snapshot.Notifications[:maxNotifications]
+	}
 }
 
 // View renders the active section, modal, or help overlay.
@@ -597,10 +604,10 @@ func (m Model) identityValidationPreview() string {
 	_, err := warp.ImportManualIdentity(warp.ManualIdentity{
 		DeviceID:           m.identitySetup.deviceID,
 		PrivateKey:         m.identitySetup.privateKey,
-		InterfaceAddresses: splitCSV(m.identitySetup.interfaceAddresses),
+		InterfaceAddresses: textutil.SplitCSV(m.identitySetup.interfaceAddresses),
 		PeerPublicKey:      m.identitySetup.peerPublicKey,
 		Endpoint:           m.identitySetup.endpoint,
-		DNS:                splitCSV(m.identitySetup.dns),
+		DNS:                textutil.SplitCSV(m.identitySetup.dns),
 	})
 	if err != nil {
 		return "Validation preview: " + err.Error()
@@ -646,18 +653,6 @@ func (m *Model) setIdentityField(value string) {
 	case 5:
 		m.identitySetup.dns = value
 	}
-}
-
-func splitCSV(value string) []string {
-	parts := strings.Split(value, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			values = append(values, part)
-		}
-	}
-	return values
 }
 
 func trimLastRune(value string) string {

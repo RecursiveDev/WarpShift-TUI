@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,31 @@ func TestCommandPaletteQueuesDeterministicActionIntent(t *testing.T) {
 	view = model.View()
 	if !strings.Contains(view, "ACTION: endpoint scan-now requested; waiting for injected scanner") {
 		t.Fatalf("dashboard missing deterministic scan-now action toast in:\n%s", view)
+	}
+}
+
+func TestTextInputSetValueUsesRuneCursor(t *testing.T) {
+	input := newTextInput("search")
+	input.Focus()
+	input.SetValue("éx")
+
+	updated, _ := input.Update(tea.KeyMsg{Type: tea.KeyBackspace}, time.Now())
+	if updated.Value() != "é" {
+		t.Fatalf("backspace after SetValue removed wrong rune: got %q", updated.Value())
+	}
+}
+
+func TestAppendNotificationCapsHistory(t *testing.T) {
+	model := NewModel(Snapshot{})
+	for i := 0; i < maxNotifications+5; i++ {
+		model.appendNotification("info", fmt.Sprintf("message-%d", i))
+	}
+
+	if len(model.snapshot.Notifications) != maxNotifications {
+		t.Fatalf("notification count = %d, want %d", len(model.snapshot.Notifications), maxNotifications)
+	}
+	if got := model.snapshot.Notifications[0].Message; got != "message-5" {
+		t.Fatalf("oldest retained notification = %q, want message-5", got)
 	}
 }
 

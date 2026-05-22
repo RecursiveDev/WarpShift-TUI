@@ -17,7 +17,6 @@
 // ProgressMsg into the running tea.Program. The model never starts an
 // async action itself; it only renders the visual feedback for one.
 //
-// The TUI uses Bubble Tea v1 and Lipgloss v1. Bubble Tea v2 introduces
-// breaking Model/Cmd changes; that migration is tracked in
-// docs/architecture/ADR-004-bubbletea-v2-migration-deferred.md.
+// The TUI uses Bubble Tea v1 and Lipgloss v1 to preserve the current
+// Model/Cmd contract and avoid a runtime migration in this release.
 package tui

@@ -46,7 +46,7 @@ func (t *textInput) Blur() { t.focused = false }
 // SetValue replaces the text and snaps the cursor to the end.
 func (t *textInput) SetValue(v string) {
 	t.value = v
-	t.cursor = len(v)
+	t.cursor = len([]rune(v))
 }
 
 // Value returns the current text.
