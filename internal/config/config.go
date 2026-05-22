@@ -127,9 +127,9 @@ func DefaultSettings() Settings {
 			"162.159.193.20:2408",
 		}},
 		Rotation: RotationSettings{
-			Strategies:           []string{"latency", "failure"},
+			Strategies:           []string{"latency", "failure", "timed"},
 			TimedIntervalSeconds: 60,
-			FailureThreshold:     1,
+			FailureThreshold:     2,
 			MaxAttempts:          3,
 			CooldownSeconds:      60,
 			HistoryPath:          "configs/warpshift.rotation-history.json",
@@ -259,6 +259,11 @@ func ValidateIssues(settings Settings) []ValidationIssue {
 	return issues
 }
 
+// parseTOML intentionally supports only the small TOML subset used by the
+// WarpShift config: simple [section] headers, bare keys, double-quoted
+// strings, decimal integers, booleans, and arrays of double-quoted strings.
+// Broader TOML features are rejected explicitly instead of being parsed by
+// best effort rules that could silently misconfigure safety-sensitive values.
 func parseTOML(data []byte, settings *Settings) error {
 	section := ""
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
@@ -270,8 +275,12 @@ func parseTOML(data []byte, settings *Settings) error {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+		if strings.HasPrefix(line, "[") {
+			parsedSection, err := parseTOMLSection(line)
+			if err != nil {
+				return fmt.Errorf("config line %d: %w", lineNumber, err)
+			}
+			section = parsedSection
 			continue
 		}
 		key, raw, ok := strings.Cut(line, "=")
@@ -280,6 +289,12 @@ func parseTOML(data []byte, settings *Settings) error {
 		}
 		key = strings.TrimSpace(key)
 		raw = strings.TrimSpace(raw)
+		if err := validateTOMLKey(key); err != nil {
+			return fmt.Errorf("config line %d: %w", lineNumber, err)
+		}
+		if err := rejectUnsupportedRawValue(raw); err != nil {
+			return fmt.Errorf("config line %d: %w", lineNumber, err)
+		}
 		if err := applySetting(settings, section, key, raw); err != nil {
 			return fmt.Errorf("config line %d: %w", lineNumber, err)
 		}
@@ -375,193 +390,165 @@ func validateProxyHardeningSettings(settings ProxySettings, add func(string, str
 func applySetting(settings *Settings, section, key, raw string) error {
 	switch section + "." + key {
 	case "app.startup_mode":
-		settings.App.StartupMode = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.App.StartupMode = value })
 	case "warp.status_source":
-		settings.Warp.StatusSource = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.Warp.StatusSource = value })
 	case "endpoint.static":
-		values, err := parseStringArray(raw)
-		if err != nil {
-			return err
-		}
-		settings.Endpoint.Static = values
+		return setStringArraySetting(raw, func(values []string) { settings.Endpoint.Static = values })
 	case "rotation.strategies":
-		values, err := parseStringArray(raw)
+		return setStringArraySetting(raw, func(values []string) { settings.Rotation.Strategies = values })
+	case "rotation.timed_interval_seconds":
+		value, err := parseInteger(raw, "timed_interval_seconds")
 		if err != nil {
 			return err
-		}
-		settings.Rotation.Strategies = values
-	case "rotation.timed_interval_seconds":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("timed_interval_seconds must be an integer")
 		}
 		settings.Rotation.TimedIntervalSeconds = value
 	case "rotation.failure_threshold":
-		value, err := strconv.Atoi(raw)
+		value, err := parseInteger(raw, "failure_threshold")
 		if err != nil {
-			return fmt.Errorf("failure_threshold must be an integer")
+			return err
 		}
 		settings.Rotation.FailureThreshold = value
 	case "rotation.max_latency_ms":
-		value, err := strconv.Atoi(raw)
+		value, err := parseInteger(raw, "max_latency_ms")
 		if err != nil {
-			return fmt.Errorf("max_latency_ms must be an integer")
+			return err
 		}
 		settings.Rotation.MaxLatencyMS = value
 	case "rotation.max_attempts":
-		value, err := strconv.Atoi(raw)
+		value, err := parseInteger(raw, "max_attempts")
 		if err != nil {
-			return fmt.Errorf("max_attempts must be an integer")
+			return err
 		}
 		settings.Rotation.MaxAttempts = value
 	case "rotation.cooldown_seconds":
-		value, err := strconv.Atoi(raw)
+		value, err := parseInteger(raw, "cooldown_seconds")
 		if err != nil {
-			return fmt.Errorf("cooldown_seconds must be an integer")
+			return err
 		}
 		settings.Rotation.CooldownSeconds = value
 	case "rotation.history_path":
-		settings.Rotation.HistoryPath = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.Rotation.HistoryPath = value })
 	case "rotation.target_labels":
-		values, err := parseStringArray(raw)
-		if err != nil {
-			return err
-		}
-		settings.Rotation.TargetLabels = values
+		return setStringArraySetting(raw, func(values []string) { settings.Rotation.TargetLabels = values })
 	case "rotation.region_labels":
-		values, err := parseStringArray(raw)
-		if err != nil {
-			return err
-		}
-		settings.Rotation.RegionLabels = values
+		return setStringArraySetting(raw, func(values []string) { settings.Rotation.RegionLabels = values })
 	case "identity.store_path":
-		settings.Identity.StorePath = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.Identity.StorePath = value })
 	case "wireguard.output_path":
-		settings.WireGuard.OutputPath = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.WireGuard.OutputPath = value })
 	case "wireguard.endpoint":
-		settings.WireGuard.Endpoint = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.WireGuard.Endpoint = value })
 	case "wireguard.dns":
-		values, err := parseStringArray(raw)
-		if err != nil {
-			return err
-		}
-		settings.WireGuard.DNS = values
+		return setStringArraySetting(raw, func(values []string) { settings.WireGuard.DNS = values })
 	case "wireguard.allowed_ips":
-		values, err := parseStringArray(raw)
+		return setStringArraySetting(raw, func(values []string) { settings.WireGuard.AllowedIPs = values })
+	case "wireguard.persistent_keepalive":
+		value, err := parseInteger(raw, "persistent_keepalive")
 		if err != nil {
 			return err
-		}
-		settings.WireGuard.AllowedIPs = values
-	case "wireguard.persistent_keepalive":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("persistent_keepalive must be an integer")
 		}
 		settings.WireGuard.PersistentKeepalive = value
 	case "wireguard.mtu":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("mtu must be an integer")
-		}
-		settings.WireGuard.MTU = value
-	case "wireguard.auto_mtu":
-		value, err := strconv.ParseBool(raw)
-		if err != nil {
-			return fmt.Errorf("auto_mtu must be a boolean")
-		}
-		settings.WireGuard.AutoMTU = value
-	case "wireguard.mtu_min":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("mtu_min must be an integer")
-		}
-		settings.WireGuard.MTUMin = value
-	case "wireguard.mtu_max":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("mtu_max must be an integer")
-		}
-		settings.WireGuard.MTUMax = value
-	case "wireguard.mtu_step":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("mtu_step must be an integer")
-		}
-		settings.WireGuard.MTUStep = value
-	case "proxy.enabled":
-		value, err := strconv.ParseBool(raw)
-		if err != nil {
-			return fmt.Errorf("enabled must be a boolean")
-		}
-		settings.Proxy.Enabled = value
-	case "proxy.listen_address":
-		settings.Proxy.ListenAddress = parseString(raw)
-	case "proxy.allowed_client_cidrs":
-		values, err := parseStringArray(raw)
+		value, err := parseInteger(raw, "mtu")
 		if err != nil {
 			return err
 		}
-		settings.Proxy.AllowedClientCIDRs = values
-	case "proxy.rate_limit_per_minute":
-		value, err := strconv.Atoi(raw)
+		settings.WireGuard.MTU = value
+	case "wireguard.auto_mtu":
+		value, err := parseBool(raw, "auto_mtu")
 		if err != nil {
-			return fmt.Errorf("rate_limit_per_minute must be an integer")
+			return err
+		}
+		settings.WireGuard.AutoMTU = value
+	case "wireguard.mtu_min":
+		value, err := parseInteger(raw, "mtu_min")
+		if err != nil {
+			return err
+		}
+		settings.WireGuard.MTUMin = value
+	case "wireguard.mtu_max":
+		value, err := parseInteger(raw, "mtu_max")
+		if err != nil {
+			return err
+		}
+		settings.WireGuard.MTUMax = value
+	case "wireguard.mtu_step":
+		value, err := parseInteger(raw, "mtu_step")
+		if err != nil {
+			return err
+		}
+		settings.WireGuard.MTUStep = value
+	case "proxy.enabled":
+		value, err := parseBool(raw, "enabled")
+		if err != nil {
+			return err
+		}
+		settings.Proxy.Enabled = value
+	case "proxy.listen_address":
+		return setStringSetting(raw, func(value string) { settings.Proxy.ListenAddress = value })
+	case "proxy.allowed_client_cidrs":
+		return setStringArraySetting(raw, func(values []string) { settings.Proxy.AllowedClientCIDRs = values })
+	case "proxy.rate_limit_per_minute":
+		value, err := parseInteger(raw, "rate_limit_per_minute")
+		if err != nil {
+			return err
 		}
 		settings.Proxy.RateLimitPerMinute = value
 	case "proxy.rate_limit_burst":
-		value, err := strconv.Atoi(raw)
+		value, err := parseInteger(raw, "rate_limit_burst")
 		if err != nil {
-			return fmt.Errorf("rate_limit_burst must be an integer")
+			return err
 		}
 		settings.Proxy.RateLimitBurst = value
 	case "proxy.tls_mode":
-		settings.Proxy.TLSMode = parseString(raw)
+		return setStringSetting(raw, func(value string) { settings.Proxy.TLSMode = value })
 	case "safety.account_automation":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "account_automation")
 		if err != nil {
-			return fmt.Errorf("account_automation must be a boolean")
+			return err
 		}
 		settings.Safety.AccountAutomation = value
 	case "safety.account_automation_consent":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "account_automation_consent")
 		if err != nil {
-			return fmt.Errorf("account_automation_consent must be a boolean")
+			return err
 		}
 		settings.Safety.AccountAutomationConsent = value
 	case "safety.warp_plus_generation":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "warp_plus_generation")
 		if err != nil {
-			return fmt.Errorf("warp_plus_generation must be a boolean")
+			return err
 		}
 		settings.Safety.WARPPlusGeneration = value
 	case "safety.warp_plus_generation_consent":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "warp_plus_generation_consent")
 		if err != nil {
-			return fmt.Errorf("warp_plus_generation_consent must be a boolean")
+			return err
 		}
 		settings.Safety.WARPPlusGenerationConsent = value
 	case "safety.dpi_evasion":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "dpi_evasion")
 		if err != nil {
-			return fmt.Errorf("dpi_evasion must be a boolean")
+			return err
 		}
 		settings.Safety.DPIEvasion = value
 	case "safety.dpi_evasion_consent":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "dpi_evasion_consent")
 		if err != nil {
-			return fmt.Errorf("dpi_evasion_consent must be a boolean")
+			return err
 		}
 		settings.Safety.DPIEvasionConsent = value
 	case "safety.streaming_unlock":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "streaming_unlock")
 		if err != nil {
-			return fmt.Errorf("streaming_unlock must be a boolean")
+			return err
 		}
 		settings.Safety.StreamingUnlock = value
 	case "safety.streaming_unlock_consent":
-		value, err := strconv.ParseBool(raw)
+		value, err := parseBool(raw, "streaming_unlock_consent")
 		if err != nil {
-			return fmt.Errorf("streaming_unlock_consent must be a boolean")
+			return err
 		}
 		settings.Safety.StreamingUnlockConsent = value
 	default:
@@ -570,10 +557,102 @@ func applySetting(settings *Settings, section, key, raw string) error {
 	return nil
 }
 
+func parseTOMLSection(line string) (string, error) {
+	if strings.HasPrefix(line, "[[") || strings.HasSuffix(line, "]]") {
+		return "", fmt.Errorf("table arrays are not supported")
+	}
+	if !strings.HasSuffix(line, "]") {
+		return "", fmt.Errorf("expected [section] header")
+	}
+	section := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+	if section == "" {
+		return "", fmt.Errorf("section name is required")
+	}
+	if strings.Contains(section, ".") {
+		return "", fmt.Errorf("dotted section names are not supported")
+	}
+	if strings.ContainsAny(section, " \t[]\"'") {
+		return "", fmt.Errorf("unsupported section syntax")
+	}
+	return section, nil
+}
+
+func validateTOMLKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("key is required")
+	}
+	if strings.Contains(key, ".") {
+		return fmt.Errorf("dotted keys are not supported")
+	}
+	if strings.ContainsAny(key, " \t[]\"'") {
+		return fmt.Errorf("unsupported key syntax")
+	}
+	return nil
+}
+
+func rejectUnsupportedRawValue(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("value is required")
+	}
+	if strings.HasPrefix(raw, "{") {
+		return fmt.Errorf("inline tables are not supported")
+	}
+	if strings.HasPrefix(raw, "[[") {
+		return fmt.Errorf("nested arrays are not supported")
+	}
+	return nil
+}
+
+func setStringSetting(raw string, assign func(string)) error {
+	value, err := parseString(raw)
+	if err != nil {
+		return err
+	}
+	assign(value)
+	return nil
+}
+
+func setStringArraySetting(raw string, assign func([]string)) error {
+	values, err := parseStringArray(raw)
+	if err != nil {
+		return err
+	}
+	assign(values)
+	return nil
+}
+
+func parseInteger(raw, name string) (int, error) {
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	return value, nil
+}
+
+func parseBool(raw, name string) (bool, error) {
+	switch raw {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a lowercase TOML boolean literal (true or false)", name)
+	}
+}
+
 func stripComment(line string) string {
 	inQuote := false
+	escaped := false
 	for i, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
 		switch r {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
 		case '"':
 			inQuote = !inQuote
 		case '#':
@@ -585,8 +664,19 @@ func stripComment(line string) string {
 	return line
 }
 
-func parseString(raw string) string {
-	return strings.Trim(strings.TrimSpace(raw), "\"")
+func parseString(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, `"""`) || strings.HasPrefix(raw, `'''`) {
+		return "", fmt.Errorf("multiline strings are not supported")
+	}
+	if !strings.HasPrefix(raw, "\"") || !strings.HasSuffix(raw, "\"") {
+		return "", fmt.Errorf("expected double-quoted string")
+	}
+	value, err := strconv.Unquote(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid quoted string: %w", err)
+	}
+	return value, nil
 }
 
 func parseStringArray(raw string) ([]string, error) {
@@ -598,16 +688,61 @@ func parseStringArray(raw string) ([]string, error) {
 	if inner == "" {
 		return nil, nil
 	}
-	parts := strings.Split(inner, ",")
+	parts, err := splitArrayValues(inner)
+	if err != nil {
+		return nil, err
+	}
 	values := make([]string, 0, len(parts))
 	for _, part := range parts {
-		value := parseString(part)
+		value, err := parseArrayString(part)
+		if err != nil {
+			return nil, err
+		}
 		if value == "" {
 			return nil, fmt.Errorf("string array values cannot be empty")
 		}
 		values = append(values, value)
 	}
 	return values, nil
+}
+
+func splitArrayValues(inner string) ([]string, error) {
+	parts := []string{}
+	start := 0
+	inQuote := false
+	escaped := false
+	for i, r := range inner {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch r {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
+		case '"':
+			inQuote = !inQuote
+		case ',':
+			if !inQuote {
+				parts = append(parts, inner[start:i])
+				start = i + len(string(r))
+			}
+		}
+	}
+	if inQuote {
+		return nil, fmt.Errorf("unterminated quoted string in array")
+	}
+	parts = append(parts, inner[start:])
+	return parts, nil
+}
+
+func parseArrayString(raw string) (string, error) {
+	value, err := parseString(raw)
+	if err != nil {
+		return "", fmt.Errorf("array values must be double-quoted strings: %w", err)
+	}
+	return value, nil
 }
 
 func validateEndpoint(endpoint string) error {

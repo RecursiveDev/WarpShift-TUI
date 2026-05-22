@@ -91,6 +91,26 @@ static = ["162.159.192.10:2408", "162.159.193.20:2408"]
 	}
 }
 
+func TestLoadStringArrayAllowsCommasInsideQuotedValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "warpshift.toml")
+	content := `
+[rotation]
+target_labels = ["general,with-comma", "video"]
+region_labels = ["global"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	settings, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if got := strings.Join(settings.Rotation.TargetLabels, "|"); got != "general,with-comma|video" {
+		t.Fatalf("target labels = %q", got)
+	}
+}
+
 func TestLoadAllowsImplementedPrivateUseSafetyFlagsWithExplicitConsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "warpshift.toml")
 	content := `
@@ -123,6 +143,66 @@ streaming_unlock_consent = true
 	}
 	if !settings.Safety.StreamingUnlock || !settings.Safety.StreamingUnlockConsent {
 		t.Fatalf("streaming unlock consent gate was not loaded: %+v", settings.Safety)
+	}
+}
+
+func TestLoadRejectsNonStrictBooleanLiterals(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "numeric bool",
+			content: `
+[proxy]
+enabled = 1
+`,
+			want: "enabled must be a lowercase TOML boolean literal (true or false)",
+		},
+		{
+			name: "non-lowercase bool",
+			content: `
+[wireguard]
+auto_mtu = TRUE
+`,
+			want: "auto_mtu must be a lowercase TOML boolean literal (true or false)",
+		},
+		{
+			name: "numeric safety consent bool",
+			content: `
+[safety]
+streaming_unlock = false
+streaming_unlock_consent = 1
+`,
+			want: "streaming_unlock_consent must be a lowercase TOML boolean literal (true or false)",
+		},
+		{
+			name: "non-lowercase safety consent bool",
+			content: `
+[safety]
+streaming_unlock = false
+streaming_unlock_consent = True
+`,
+			want: "streaming_unlock_consent must be a lowercase TOML boolean literal (true or false)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "warpshift.toml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write config fixture: %v", err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected non-strict boolean literal to be rejected")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
 	}
 }
 
@@ -332,5 +412,119 @@ func TestValidateRejectsUnsafePhase6Settings(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("validation error missing %q in %q", want, message)
 		}
+	}
+}
+
+func TestDefaultRotationStrategiesMatchExampleConfig(t *testing.T) {
+	examplePath := filepath.Join("..", "..", "configs", "warpshift.example.toml")
+	example, err := Load(examplePath)
+	if err != nil {
+		t.Fatalf("Load example config returned unexpected error: %v", err)
+	}
+	defaults := DefaultSettings()
+
+	got := strings.Join(defaults.Rotation.Strategies, ",")
+	want := strings.Join(example.Rotation.Strategies, ",")
+	if got != want {
+		t.Fatalf("default rotation strategies = %q, want example strategies %q", got, want)
+	}
+}
+
+func TestLoadTOMLSubsetAllowsQuotedHashesEscapesAndComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "warpshift.toml")
+	content := `
+[identity]
+store_path = "state/identity#1.json" # comment outside the string
+
+[rotation]
+target_labels = ["general\"quoted", "video#hash"]
+region_labels = ["global"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	settings, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if settings.Identity.StorePath != "state/identity#1.json" {
+		t.Fatalf("identity store path = %q", settings.Identity.StorePath)
+	}
+	if got := strings.Join(settings.Rotation.TargetLabels, "|"); got != "general\"quoted|video#hash" {
+		t.Fatalf("target labels = %q", got)
+	}
+}
+
+func TestLoadTOMLSubsetRejectsUnsupportedSyntax(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "unquoted string",
+			content: `
+[app]
+startup_mode = tui
+`,
+			want: "expected double-quoted string",
+		},
+		{
+			name: "dotted key",
+			content: `
+[app]
+startup.mode = "tui"
+`,
+			want: "dotted keys are not supported",
+		},
+		{
+			name: "inline table",
+			content: `
+[app]
+startup_mode = { mode = "tui" }
+`,
+			want: "inline tables are not supported",
+		},
+		{
+			name: "table array",
+			content: `
+[[app]]
+startup_mode = "tui"
+`,
+			want: "table arrays are not supported",
+		},
+		{
+			name: "multiline string",
+			content: `
+[app]
+startup_mode = """tui"""
+`,
+			want: "multiline strings are not supported",
+		},
+		{
+			name: "unquoted array value",
+			content: `
+[rotation]
+strategies = [latency]
+`,
+			want: "array values must be double-quoted strings",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "warpshift.toml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write config fixture: %v", err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected unsupported TOML syntax to be rejected")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
 	}
 }

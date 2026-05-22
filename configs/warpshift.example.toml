@@ -1,5 +1,6 @@
 # Example WarpShift-TUI configuration.
 # Copy to configs/warpshift.local.toml for local experiments; do not commit credentials.
+# Supported config syntax is intentionally small: simple [section] key = value entries with quoted strings, integers, booleans, and arrays of quoted strings.
 
 [app]
 startup_mode = "tui"
@@ -52,7 +53,7 @@ allowed_client_cidrs = ["127.0.0.0/8", "::1/128"]
 rate_limit_per_minute = 120
 rate_limit_burst = 20
 # TLS/HTTP2 mode records operator intent; only "disabled" has runtime effect in this version.
-# Inbound TLS termination and outbound TLS wrapping are not implemented (see docs/architecture/ADR-003).
+# Inbound TLS termination and outbound TLS wrapping are not implemented in this version.
 tls_mode = "disabled"
 
 [safety]
@@ -62,7 +63,7 @@ tls_mode = "disabled"
 # `warpshift license bind/status` require warp_plus_generation + warp_plus_generation_consent for user-owned WARP+ license binding only.
 # `warpshift rotation run` requires streaming_unlock + streaming_unlock_consent.
 # DPI evasion is not implemented in this version; the flags preserve config compatibility.
-# See docs/architecture/ADR-002-dpi-evasion-deferred.md for the deferred-scope decision.
+# These flags are deferred-scope compatibility settings; leave them disabled.
 account_automation = false
 account_automation_consent = false
 warp_plus_generation = false # Backward-compatible name; enables user-owned WARP+ license binding, not third-party generation.
