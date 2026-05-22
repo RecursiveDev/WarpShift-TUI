@@ -98,6 +98,45 @@ func TestRegisterAccountRequiresConsentBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestRegisterAccountPropagatesInstallIDRandomFailure(t *testing.T) {
+	previousReader := installIDRandomReader
+	installIDRandomReader = failingReader{}
+	t.Cleanup(func() { installIDRandomReader = previousReader })
+
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	client, err := NewAPIClient(APIClientConfig{BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewAPIClient returned unexpected error: %v", err)
+	}
+
+	_, err = RegisterAccount(context.Background(), AccountRegistrationRequest{
+		Client:           client,
+		StorePath:        filepath.Join(t.TempDir(), "identity.json"),
+		ExplicitConsent:  true,
+		AcknowledgedGate: true,
+	})
+	if err == nil {
+		t.Fatal("expected install ID generation failure")
+	}
+	if !strings.Contains(err.Error(), "generate install id") {
+		t.Fatalf("RegisterAccount error = %v, want install ID failure", err)
+	}
+	if called {
+		t.Fatal("registration contacted API after install ID generation failed")
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("forced random failure")
+}
+
 func TestLicenseBindingAndStatusUseAPIClientWithoutLeakingSecrets(t *testing.T) {
 	licenseKey := "license-secret-value"
 	identity := Identity{

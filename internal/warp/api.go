@@ -157,9 +157,13 @@ func BindOfficialLicenseToDevice(ctx context.Context, request OfficialLicenseAPI
 
 // RegisterDevice performs only the WARP API registration call; callers own consent and storage.
 func (c *APIClient) RegisterDevice(ctx context.Context, publicKey, privateKey string) (*Identity, error) {
+	installID, err := randomInstallID()
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]string{
 		"key":        strings.TrimSpace(publicKey),
-		"install_id": randomInstallID(),
+		"install_id": installID,
 		"fcm_token":  "",
 		"tos":        time.Now().UTC().Format(time.RFC3339),
 		"type":       "Android",
@@ -309,12 +313,14 @@ func generateWireGuardKeyPair() (privateKey string, publicKey string, err error)
 	return base64.StdEncoding.EncodeToString(privateBytes), base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
-func randomInstallID() string {
+var installIDRandomReader io.Reader = rand.Reader
+
+func randomInstallID() (string, error) {
 	bytes := make([]byte, 16)
-	if _, err := rand.Read(bytes); err != nil {
-		return "warpshift"
+	if _, err := io.ReadFull(installIDRandomReader, bytes); err != nil {
+		return "", fmt.Errorf("generate install id: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(bytes)
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
 type apiDeviceResponse struct {
