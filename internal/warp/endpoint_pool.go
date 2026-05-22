@@ -41,12 +41,16 @@ type EndpointPoolFilter struct {
 }
 
 // KnownCloudflareWARPPrefixes returns the compact known WARP endpoint ranges used for validation/generation.
-func KnownCloudflareWARPPrefixes() []netip.Prefix {
+func KnownCloudflareWARPPrefixes() ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(knownCloudflareWARPPrefixValues))
 	for _, value := range knownCloudflareWARPPrefixValues {
-		prefixes = append(prefixes, netip.MustParsePrefix(value))
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse known WARP prefix %q: %w", value, err)
+		}
+		prefixes = append(prefixes, prefix)
 	}
-	return prefixes
+	return prefixes, nil
 }
 
 // ExpandKnownWARPEndpointPool deterministically expands compact WARP ranges into a bounded local pool.
@@ -65,7 +69,11 @@ func ExpandKnownWARPEndpointPool(spec EndpointPoolSpec) ([]EndpointPoolEntry, er
 	}
 
 	entries := []EndpointPoolEntry{}
-	for _, prefix := range KnownCloudflareWARPPrefixes() {
+	prefixes, err := KnownCloudflareWARPPrefixes()
+	if err != nil {
+		return nil, err
+	}
+	for _, prefix := range prefixes {
 		family := "ipv6"
 		if prefix.Addr().Is4() {
 			family = "ipv4"

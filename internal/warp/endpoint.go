@@ -47,7 +47,11 @@ func IsKnownCloudflareWARPEndpoint(endpoint Endpoint) bool {
 	if err != nil {
 		return false
 	}
-	for _, prefix := range KnownCloudflareWARPPrefixes() {
+	prefixes, err := KnownCloudflareWARPPrefixes()
+	if err != nil {
+		return false
+	}
+	for _, prefix := range prefixes {
 		if prefix.Contains(addr) {
 			return true
 		}
