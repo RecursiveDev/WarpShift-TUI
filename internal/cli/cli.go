@@ -18,6 +18,7 @@ import (
 	"github.com/RecursiveDev/WarpShift-TUI/internal/app"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/config"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/proxy"
+	"github.com/RecursiveDev/WarpShift-TUI/internal/textutil"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/tui"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/tunnel"
 	"github.com/RecursiveDev/WarpShift-TUI/internal/warp"
@@ -749,7 +750,7 @@ func (c *Command) runEndpoint(ctx context.Context, args []string) int {
 			fmt.Fprintf(c.stderr, "warpshift endpoint pool: %v\n", err)
 			return 2
 		}
-		entries = warp.FilterEndpointPool(entries, warp.EndpointPoolFilter{Labels: splitCSV(*labelFilter)})
+		entries = warp.FilterEndpointPool(entries, warp.EndpointPoolFilter{Labels: textutil.SplitCSV(*labelFilter)})
 		for _, entry := range entries {
 			fmt.Fprintf(c.stdout, "%s/%s labels=%s\n", formatEndpointAddress(entry.Endpoint), entry.Endpoint.Transport, strings.Join(entry.Labels, ","))
 		}
@@ -965,7 +966,7 @@ func (c *Command) runProxy(ctx context.Context, args []string) int {
 			return 2
 		}
 
-		baseConfig := proxy.Config{Username: *username, Password: *password, AllowedClientCIDRs: splitCSV(*allowCIDRs), RateLimitPerMinute: *rateLimitPerMinute, RateLimitBurst: *rateLimitBurst}
+		baseConfig := proxy.Config{Username: *username, Password: *password, AllowedClientCIDRs: textutil.SplitCSV(*allowCIDRs), RateLimitPerMinute: *rateLimitPerMinute, RateLimitBurst: *rateLimitBurst}
 		var firstConfig proxy.Config
 		for i, listener := range listeners {
 			candidate := baseConfig
@@ -1245,7 +1246,7 @@ func (c *Command) buildRotationPlan(command, configPath, targetLabelCSV string, 
 		EndpointPool:  entries,
 		Profiles:      profiles,
 		History:       history,
-		TargetLabels:  splitCSV(targetLabelCSV),
+		TargetLabels:  textutil.SplitCSV(targetLabelCSV),
 		Cooldown:      time.Duration(settings.Rotation.CooldownSeconds) * time.Second,
 		BackoffBase:   time.Duration(settings.Rotation.CooldownSeconds) * time.Second,
 		MaxCandidates: limit,
@@ -1487,7 +1488,7 @@ func (c *Command) openProfileStore(command, storeDir string) (*warp.ProfileStore
 }
 
 func parsePortList(raw string) ([]int, error) {
-	parts := splitCSV(raw)
+	parts := textutil.SplitCSV(raw)
 	if len(parts) == 0 {
 		return nil, errors.New("at least one endpoint pool port is required")
 	}
@@ -1500,18 +1501,6 @@ func parsePortList(raw string) ([]int, error) {
 		ports = append(ports, port)
 	}
 	return ports, nil
-}
-
-func splitCSV(raw string) []string {
-	parts := strings.Split(raw, ",")
-	values := []string{}
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			values = append(values, part)
-		}
-	}
-	return values
 }
 
 func formatEndpointAddress(endpoint warp.Endpoint) string {
